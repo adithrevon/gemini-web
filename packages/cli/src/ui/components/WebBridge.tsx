@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { WebSocket } from 'undici';
 import { useUIState } from '../contexts/UIStateContext.js';
 import { useUIActions } from '../contexts/UIActionsContext.js';
@@ -23,6 +23,14 @@ import {
   ToolConfirmationOutcome,
   type SerializableConfirmationDetails,
   type ToolConfirmationPayload,
+  DEFAULT_GEMINI_MODEL,
+  DEFAULT_GEMINI_FLASH_MODEL,
+  DEFAULT_GEMINI_FLASH_LITE_MODEL,
+  DEFAULT_GEMINI_MODEL_AUTO,
+  PREVIEW_GEMINI_MODEL,
+  PREVIEW_GEMINI_FLASH_MODEL,
+  PREVIEW_GEMINI_MODEL_AUTO,
+  getDisplayString,
 } from '@google/gemini-cli-core';
 import type { ToolResultDisplay } from '@google/gemini-cli-core';
 
@@ -43,21 +51,31 @@ type BridgeToolCall = {
 
 type BridgeHistoryItem =
   | {
-      id?: number;
-      type: 'user' | 'gemini' | 'gemini_content';
-      text: string;
-    }
+    id?: number;
+    type: 'user' | 'gemini' | 'gemini_content';
+    text: string;
+  }
   | {
-      id?: number;
-      type: 'tool_group';
-      tools: BridgeToolCall[];
-    };
+    id?: number;
+    type: 'tool_group';
+    tools: BridgeToolCall[];
+  };
+
+type BridgeModelOption = {
+  value: string;
+  label: string;
+  description?: string;
+  isAuto: boolean;
+};
 
 type BridgeSnapshot = {
   history: BridgeHistoryItem[];
   pending: BridgeHistoryItem[];
   streamingState: StreamingState;
   isTrustedFolder: boolean | undefined;
+  currentModel: string;
+  availableModels: BridgeModelOption[];
+  hasPreviewAccess: boolean;
 };
 
 const sanitizeConfirmationDetails = (
@@ -161,6 +179,43 @@ const serializeHistoryItem = (
   return null;
 };
 
+const getAvailableModels = (
+  hasPreviewAccess: boolean,
+): BridgeModelOption[] => {
+  const models: BridgeModelOption[] = [];
+
+  // Auto options first
+  if (hasPreviewAccess) {
+    models.push({
+      value: PREVIEW_GEMINI_MODEL_AUTO,
+      label: getDisplayString(PREVIEW_GEMINI_MODEL_AUTO),
+      description: 'Let CLI decide: gemini-3-pro or gemini-3-flash',
+      isAuto: true,
+    });
+  }
+  models.push({
+    value: DEFAULT_GEMINI_MODEL_AUTO,
+    label: getDisplayString(DEFAULT_GEMINI_MODEL_AUTO),
+    description: 'Let CLI decide: gemini-2.5-pro or gemini-2.5-flash',
+    isAuto: true,
+  });
+
+  // Manual options
+  if (hasPreviewAccess) {
+    models.push(
+      { value: PREVIEW_GEMINI_MODEL, label: PREVIEW_GEMINI_MODEL, isAuto: false },
+      { value: PREVIEW_GEMINI_FLASH_MODEL, label: PREVIEW_GEMINI_FLASH_MODEL, isAuto: false },
+    );
+  }
+  models.push(
+    { value: DEFAULT_GEMINI_MODEL, label: DEFAULT_GEMINI_MODEL, isAuto: false },
+    { value: DEFAULT_GEMINI_FLASH_MODEL, label: DEFAULT_GEMINI_FLASH_MODEL, isAuto: false },
+    { value: DEFAULT_GEMINI_FLASH_LITE_MODEL, label: DEFAULT_GEMINI_FLASH_LITE_MODEL, isAuto: false },
+  );
+
+  return models;
+};
+
 const safeParseMessage = (
   raw: unknown,
 ): Record<string, unknown> | null => {
@@ -209,6 +264,17 @@ export const WebBridge = () => {
     }
   };
 
+  const hasPreviewAccess = Boolean(
+    config?.getPreviewFeatures() && config?.getHasAccessToPreviewModel(),
+  );
+  const [currentModel, setCurrentModel] = useState(
+    () => config?.getModel() ?? DEFAULT_GEMINI_MODEL_AUTO,
+  );
+  const availableModels = useMemo(
+    () => getAvailableModels(hasPreviewAccess),
+    [hasPreviewAccess],
+  );
+
   const snapshot = useMemo<BridgeSnapshot>(() => {
     const history = uiState.history
       .map((item) => serializeHistoryItem(item, true))
@@ -221,12 +287,18 @@ export const WebBridge = () => {
       pending,
       streamingState: uiState.streamingState,
       isTrustedFolder: uiState.isTrustedFolder,
+      currentModel,
+      availableModels,
+      hasPreviewAccess,
     };
   }, [
     uiState.history,
     uiState.pendingHistoryItems,
     uiState.streamingState,
     uiState.isTrustedFolder,
+    currentModel,
+    availableModels,
+    hasPreviewAccess,
   ]);
 
   const findToolInfo = (
@@ -361,6 +433,16 @@ export const WebBridge = () => {
         }
         if (messageType === 'stdin') {
           log('stdin ignored (submit-only mode)');
+        }
+        if (messageType === 'setModel') {
+          const model =
+            typeof message['model'] === 'string' ? message['model'] : '';
+          if (model && config) {
+            log('setModel', { model });
+            config.setModel(model, true); // temporary = true (session only)
+            setCurrentModel(model); // Update React state to trigger snapshot update
+          }
+          return;
         }
       };
 

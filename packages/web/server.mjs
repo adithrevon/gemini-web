@@ -9,7 +9,9 @@ import { spawn } from 'node:child_process';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..', '..');
-const publicDir = path.join(__dirname, 'public');
+// Serve from Vite build output (dist) or fallback to public for dev
+const distDir = path.join(__dirname, 'dist');
+const publicDir = existsSync(distDir) ? distDir : path.join(__dirname, 'public');
 
 const port = Number(process.env.GEMINI_WEB_PORT ?? '7337');
 const wsPath = process.env.GEMINI_WEB_WS_PATH ?? '/ws';
@@ -132,15 +134,17 @@ wss.on('connection', (socket) => {
       return;
     }
 
-    if (role === 'web' && (message.type === 'submit' || message.type === 'confirm')) {
+    if (role === 'web' && (message.type === 'submit' || message.type === 'confirm' || message.type === 'setModel')) {
       if (message.type === 'submit') {
         log('submit from web', { length: message.text?.length ?? 0 });
-      } else {
+      } else if (message.type === 'confirm') {
         log('confirm from web', {
           callId: message.callId,
           outcome: message.outcome,
           correlationId: message.correlationId,
         });
+      } else if (message.type === 'setModel') {
+        log('setModel from web', { model: message.model });
       }
       if (!isSocketOpen(cliSocket)) {
         cliSocket = null;
