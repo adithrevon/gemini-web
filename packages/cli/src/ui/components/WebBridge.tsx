@@ -51,15 +51,15 @@ type BridgeToolCall = {
 
 type BridgeHistoryItem =
   | {
-    id?: number;
-    type: 'user' | 'gemini' | 'gemini_content';
-    text: string;
-  }
+      id?: number;
+      type: 'user' | 'gemini' | 'gemini_content';
+      text: string;
+    }
   | {
-    id?: number;
-    type: 'tool_group';
-    tools: BridgeToolCall[];
-  };
+      id?: number;
+      type: 'tool_group';
+      tools: BridgeToolCall[];
+    };
 
 type BridgeModelOption = {
   value: string;
@@ -69,6 +69,8 @@ type BridgeModelOption = {
 };
 
 type BridgeSnapshot = {
+  instanceId: string;
+  projectPath: string;
   history: BridgeHistoryItem[];
   pending: BridgeHistoryItem[];
   streamingState: StreamingState;
@@ -135,9 +137,7 @@ const sanitizeConfirmationDetails = (
   }
 };
 
-const sanitizeToolCall = (
-  tool: IndividualToolCallDisplay,
-): BridgeToolCall => ({
+const sanitizeToolCall = (tool: IndividualToolCallDisplay): BridgeToolCall => ({
   callId: tool.callId,
   name: tool.name,
   description: tool.description,
@@ -179,9 +179,7 @@ const serializeHistoryItem = (
   return null;
 };
 
-const getAvailableModels = (
-  hasPreviewAccess: boolean,
-): BridgeModelOption[] => {
+const getAvailableModels = (hasPreviewAccess: boolean): BridgeModelOption[] => {
   const models: BridgeModelOption[] = [];
 
   // Auto options first
@@ -203,22 +201,36 @@ const getAvailableModels = (
   // Manual options
   if (hasPreviewAccess) {
     models.push(
-      { value: PREVIEW_GEMINI_MODEL, label: PREVIEW_GEMINI_MODEL, isAuto: false },
-      { value: PREVIEW_GEMINI_FLASH_MODEL, label: PREVIEW_GEMINI_FLASH_MODEL, isAuto: false },
+      {
+        value: PREVIEW_GEMINI_MODEL,
+        label: PREVIEW_GEMINI_MODEL,
+        isAuto: false,
+      },
+      {
+        value: PREVIEW_GEMINI_FLASH_MODEL,
+        label: PREVIEW_GEMINI_FLASH_MODEL,
+        isAuto: false,
+      },
     );
   }
   models.push(
     { value: DEFAULT_GEMINI_MODEL, label: DEFAULT_GEMINI_MODEL, isAuto: false },
-    { value: DEFAULT_GEMINI_FLASH_MODEL, label: DEFAULT_GEMINI_FLASH_MODEL, isAuto: false },
-    { value: DEFAULT_GEMINI_FLASH_LITE_MODEL, label: DEFAULT_GEMINI_FLASH_LITE_MODEL, isAuto: false },
+    {
+      value: DEFAULT_GEMINI_FLASH_MODEL,
+      label: DEFAULT_GEMINI_FLASH_MODEL,
+      isAuto: false,
+    },
+    {
+      value: DEFAULT_GEMINI_FLASH_LITE_MODEL,
+      label: DEFAULT_GEMINI_FLASH_LITE_MODEL,
+      isAuto: false,
+    },
   );
 
   return models;
 };
 
-const safeParseMessage = (
-  raw: unknown,
-): Record<string, unknown> | null => {
+const safeParseMessage = (raw: unknown): Record<string, unknown> | null => {
   let text: string | null = null;
   if (typeof raw === 'string') {
     text = raw;
@@ -283,6 +295,8 @@ export const WebBridge = () => {
       .map((item) => serializeHistoryItem(item, false))
       .filter((item): item is BridgeHistoryItem => item !== null);
     return {
+      instanceId: process.env['GEMINI_INSTANCE_ID'] ?? 'default',
+      projectPath: process.cwd(),
       history,
       pending,
       streamingState: uiState.streamingState,
@@ -340,7 +354,10 @@ export const WebBridge = () => {
         ws.send(JSON.stringify({ type: 'bridge:hello', role: 'cli' }));
         const initial = snapshotRef.current;
         if (initial) {
-          const payload = JSON.stringify({ type: 'bridge:update', payload: initial });
+          const payload = JSON.stringify({
+            type: 'bridge:update',
+            payload: initial,
+          });
           lastPayloadRef.current = payload;
           log('send initial snapshot', {
             history: initial.history.length,
@@ -354,10 +371,12 @@ export const WebBridge = () => {
       ws.onmessage = (event) => {
         const message = safeParseMessage(event.data);
         if (!message) return;
-        const messageType = typeof message['type'] === 'string' ? message['type'] : '';
+        const messageType =
+          typeof message['type'] === 'string' ? message['type'] : '';
         log('message', messageType);
         if (messageType === 'submit') {
-          const text = typeof message['text'] === 'string' ? message['text'] : '';
+          const text =
+            typeof message['text'] === 'string' ? message['text'] : '';
           const trimmed = text.trim();
           if (trimmed.length === 0) {
             return;
@@ -380,8 +399,9 @@ export const WebBridge = () => {
               ? message['correlationId']
               : undefined;
           const lookup = callId ? findToolInfo(callId) : null;
-          const outcome = (Object.values(ToolConfirmationOutcome) as string[])
-            .includes(outcomeRaw)
+          const outcome = (
+            Object.values(ToolConfirmationOutcome) as string[]
+          ).includes(outcomeRaw)
             ? (outcomeRaw as ToolConfirmationOutcome)
             : ToolConfirmationOutcome.Cancel;
           log('confirm', {
@@ -390,8 +410,7 @@ export const WebBridge = () => {
             correlationId,
             lookupSource: lookup?.source,
           });
-          const resolvedCorrelationId =
-            correlationId ?? lookup?.correlationId;
+          const resolvedCorrelationId = correlationId ?? lookup?.correlationId;
 
           if (callId && lookup?.source === 'pending') {
             void toolActions
@@ -471,7 +490,10 @@ export const WebBridge = () => {
   useEffect(() => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
-    const payload = JSON.stringify({ type: 'bridge:update', payload: snapshot });
+    const payload = JSON.stringify({
+      type: 'bridge:update',
+      payload: snapshot,
+    });
     if (payload === lastPayloadRef.current) return;
     lastPayloadRef.current = payload;
     log('send update', {

@@ -8,3 +8,7 @@ export { ToolGroup } from './ToolGroup';
 export { TypingIndicator } from './TypingIndicator';
 export { UserMessage } from './UserMessage';
 export { ModelSelector } from './ModelSelector';
+export { Sidebar } from './Sidebar';
+export { ProjectList } from './ProjectList';
+export { ProjectSelector } from './ProjectSelector';
+export { NewChatView } from './NewChatView';

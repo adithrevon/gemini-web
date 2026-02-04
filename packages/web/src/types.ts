@@ -67,6 +67,8 @@ export interface ModelOption {
 }
 
 export interface BridgeUpdatePayload {
+  instanceId: string;
+  projectPath: string;
   history: Message[];
   pending: Message[];
   streamingState: StreamingState;
@@ -90,11 +92,22 @@ export interface BridgeUpdateMessage {
 export interface BridgeCliStatusMessage {
   type: 'bridge:cli-status';
   connected: boolean;
+  instanceId?: string;
+}
+
+export interface BridgeInstanceListMessage {
+  type: 'bridge:instance-list';
+  instances: Array<{
+    id: string;
+    projectPath: string;
+    connected: boolean;
+  }>;
 }
 
 export interface SubmitMessage {
   type: 'submit';
   text: string;
+  instanceId: string;
 }
 
 export interface ConfirmMessage {
@@ -103,12 +116,39 @@ export interface ConfirmMessage {
   outcome: 'proceed_once' | 'proceed_always' | 'cancel';
   payload?: unknown;
   correlationId?: string;
+  instanceId: string;
 }
 
 export interface SetModelMessage {
   type: 'setModel';
   model: string;
+  instanceId: string;
 }
 
-export type IncomingMessage = BridgeUpdateMessage | BridgeCliStatusMessage;
-export type OutgoingMessage = BridgeHelloMessage | SubmitMessage | ConfirmMessage | SetModelMessage;
+export interface SpawnInstanceMessage {
+  type: 'spawnInstance';
+  projectPath: string;
+}
+
+export interface TerminateInstanceMessage {
+  type: 'terminateInstance';
+  instanceId: string;
+}
+
+export interface SetActiveInstanceMessage {
+  type: 'setActiveInstance';
+  instanceId: string;
+}
+
+export type IncomingMessage =
+  | BridgeUpdateMessage
+  | BridgeCliStatusMessage
+  | BridgeInstanceListMessage;
+export type OutgoingMessage =
+  | BridgeHelloMessage
+  | SubmitMessage
+  | ConfirmMessage
+  | SetModelMessage
+  | SpawnInstanceMessage
+  | TerminateInstanceMessage
+  | SetActiveInstanceMessage;
