@@ -12,6 +12,7 @@ import { ScreenReaderAppLayout } from './layouts/ScreenReaderAppLayout.js';
 import { DefaultAppLayout } from './layouts/DefaultAppLayout.js';
 import { AlternateBufferQuittingDisplay } from './components/AlternateBufferQuittingDisplay.js';
 import { useAlternateBuffer } from './hooks/useAlternateBuffer.js';
+import { WebBridge } from './components/WebBridge.js';
 
 export const App = () => {
   const uiState = useUIState();
@@ -23,16 +24,23 @@ export const App = () => {
       return (
         <StreamingContext.Provider value={uiState.streamingState}>
           <AlternateBufferQuittingDisplay />
+          <WebBridge />
         </StreamingContext.Provider>
       );
     } else {
-      return <QuittingDisplay />;
+      return (
+        <>
+          <QuittingDisplay />
+          <WebBridge />
+        </>
+      );
     }
   }
 
   return (
     <StreamingContext.Provider value={uiState.streamingState}>
       {isScreenReaderEnabled ? <ScreenReaderAppLayout /> : <DefaultAppLayout />}
+      <WebBridge />
     </StreamingContext.Provider>
   );
 };
