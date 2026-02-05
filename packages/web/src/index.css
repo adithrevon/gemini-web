@@ -1317,3 +1317,13 @@ body {
 .new-chat-view .composer {
   width: 100%;
 }
+
+@media (max-width: 640px) {
+  .composer__textarea {
+    font-size: 16px;
+  }
+
+  .project-selector__custom-input input {
+    font-size: 16px;
+  }
+}

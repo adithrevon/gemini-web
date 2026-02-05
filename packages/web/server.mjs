@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { WebSocketServer, WebSocket } from 'ws';
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -170,6 +170,16 @@ const sendSessionState = (session, res) => {
   });
 };
 
+const resolveProjectPath = (projectPath) => {
+  const expandedPath = expandTilde(projectPath);
+  const basePath = existsSync(expandedPath) ? expandedPath : rootDir;
+  try {
+    return realpathSync(basePath);
+  } catch {
+    return basePath;
+  }
+};
+
 const markInstanceError = (instanceId, message) => {
   const inst = instances.get(instanceId);
   if (!inst) return;
@@ -212,7 +222,12 @@ const expandTilde = (filePath) => {
   return filePath;
 };
 
-const spawnCliInstance = async (instanceId, projectPath, sessionId) => {
+const spawnCliInstance = async (
+  instanceId,
+  projectPath,
+  sessionId,
+  resolvedPathOverride,
+) => {
   const defaultBundle = path.join(rootDir, 'bundle', 'gemini.js');
   const distEntry = path.join(rootDir, 'packages', 'cli', 'dist', 'index.js');
   const cliEntry =
@@ -229,9 +244,7 @@ const spawnCliInstance = async (instanceId, projectPath, sessionId) => {
     GEMINI_INSTANCE_ID: instanceId,
   };
 
-  // Expand and validate project path
-  const expandedPath = expandTilde(projectPath);
-  const cwd = existsSync(expandedPath) ? expandedPath : rootDir;
+  const cwd = resolvedPathOverride ?? resolveProjectPath(projectPath);
 
   log('spawn cli', {
     instanceId,
@@ -498,8 +511,9 @@ const server = http.createServer(async (req, res) => {
             return;
           }
           const instanceId = crypto.randomUUID();
-          void spawnCliInstance(instanceId, projectPath, sessionId);
-          sendJson(res, 200, { instanceId });
+          const resolvedPath = resolveProjectPath(projectPath);
+          void spawnCliInstance(instanceId, projectPath, sessionId, resolvedPath);
+          sendJson(res, 200, { instanceId, resolvedPath });
           return;
         }
 

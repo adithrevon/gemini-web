@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useSession } from './useSession';
 import {
   Composer,
@@ -28,11 +28,21 @@ export default function App() {
   const [pendingProjectPath, setPendingProjectPath] = useState<string | null>(
     null,
   );
+  const [pendingInstanceId, setPendingInstanceId] = useState<string | null>(
+    null,
+  );
+  const pendingSelectionRef = useRef<string | null>(null);
+  const pendingAliasRef = useRef<string | null>(null);
 
   const handleProjectSelected = useCallback(
-    (projectPath: string) => {
+    async (projectPath: string) => {
+      pendingSelectionRef.current = projectPath;
+      pendingAliasRef.current = null;
       setPendingProjectPath(projectPath);
-      void spawnInstance(projectPath);
+      const instanceId = await spawnInstance(projectPath);
+      if (pendingSelectionRef.current === projectPath) {
+        setPendingInstanceId(instanceId);
+      }
     },
     [spawnInstance],
   );
@@ -51,15 +61,20 @@ export default function App() {
   );
 
   // Handle new chat button from sidebar (under existing project)
-  const handleNewChatFromProject = useCallback((projectPath: string) => {
-    setPendingProjectPath(projectPath);
-    setShowNewChat(true);
-    setSidebarOpen(false);
-  }, []);
+  const handleNewChatFromProject = useCallback(
+    (projectPath: string) => {
+      setPendingInstanceId(null);
+      setShowNewChat(true);
+      setSidebarOpen(false);
+      void handleProjectSelected(projectPath);
+    },
+    [handleProjectSelected],
+  );
 
   // Handle new project button
   const handleNewProject = useCallback(() => {
     setPendingProjectPath(null);
+    setPendingInstanceId(null);
     setShowNewChat(true);
     setSidebarOpen(false);
   }, []);
@@ -72,17 +87,17 @@ export default function App() {
   const isDisabled =
     !connected || !activeInstance || activeInstance.status !== 'connected';
   const hasSelectedProject = Boolean(pendingProjectPath);
+  const newChatInstanceId = showNewChat ? pendingInstanceId : activeInstanceId;
+  const newChatInstance = newChatInstanceId
+    ? instances.get(newChatInstanceId)
+    : null;
   const newChatReady =
     connected &&
-    activeInstance &&
-    activeInstance.status === 'connected' &&
-    (!hasSelectedProject || activeInstance.projectPath === pendingProjectPath);
-  const newChatDisabled = !hasSelectedProject || !newChatReady;
-  const statusInstance = showNewChat
-    ? hasSelectedProject && activeInstance?.projectPath === pendingProjectPath
-      ? activeInstance
-      : null
-    : activeInstance;
+    hasSelectedProject &&
+    newChatInstance &&
+    newChatInstance.status === 'connected';
+  const newChatDisabled = !newChatReady;
+  const statusInstance = showNewChat ? newChatInstance : activeInstance;
   const statusProjectPath = showNewChat
     ? (pendingProjectPath ?? statusInstance?.projectPath)
     : statusInstance?.projectPath;
@@ -91,6 +106,20 @@ export default function App() {
       ? (statusInstance?.status ?? 'connecting')
       : undefined
     : statusInstance?.status;
+  const aliasToHide = pendingAliasRef.current;
+  const filteredRecents = aliasToHide
+    ? recentProjects.filter((p) => p !== aliasToHide)
+    : recentProjects;
+
+  useEffect(() => {
+    if (!showNewChat) return;
+    if (!pendingProjectPath || !statusInstance?.projectPath) return;
+    if (pendingProjectPath !== statusInstance.projectPath) {
+      pendingAliasRef.current = pendingProjectPath;
+      setPendingProjectPath(statusInstance.projectPath);
+      pendingSelectionRef.current = statusInstance.projectPath;
+    }
+  }, [pendingProjectPath, showNewChat, statusInstance?.projectPath]);
 
   const handleRetry = useCallback(() => {
     if (!statusInstance || !statusInstance.projectPath) return;
@@ -140,11 +169,11 @@ export default function App() {
                   pendingProjectPath
                     ? [
                         pendingProjectPath,
-                        ...recentProjects.filter(
+                        ...filteredRecents.filter(
                           (p) => p !== pendingProjectPath,
                         ),
                       ]
-                    : recentProjects
+                    : filteredRecents
                 }
                 initialProject={pendingProjectPath ?? undefined}
                 onProjectSelected={handleProjectSelected}

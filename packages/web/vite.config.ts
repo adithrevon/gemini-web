@@ -22,7 +22,7 @@ export default defineConfig({
         changeOrigin: true,
       },
     },
-    allowedHosts: ['prems-mac-mini.tailcb69a0.ts.net'],
+    allowedHosts: ['prems-mac-mini.tailcb69a0.ts.net', 'mac.tailcb69a0.ts.net'],
   },
   build: {
     outDir: 'dist',

@@ -242,15 +242,16 @@ export function useSession(): UseSessionReturn {
       const result = (await sendCommand({
         type: 'spawnInstance',
         projectPath,
-      })) as { instanceId?: string } | null;
+      })) as { instanceId?: string; resolvedPath?: string } | null;
       const instanceId = result?.instanceId ?? null;
+      const resolvedPath = result?.resolvedPath ?? projectPath;
       if (instanceId) {
         setActiveInstanceId(instanceId);
         setInstances((prev) => {
           const next = new Map(prev);
           next.set(instanceId, {
             id: instanceId,
-            projectPath,
+            projectPath: resolvedPath,
             status: 'connecting',
             history: [],
             pending: [],
@@ -263,7 +264,6 @@ export function useSession(): UseSessionReturn {
           return next;
         });
       }
-      setRecentProjects((prev) => addToRecentProjects(projectPath, prev));
       return instanceId;
     },
     [sendCommand],

@@ -35,7 +35,6 @@ export function NewChatView({
   const [selectedProject, setSelectedProject] = useState(initialProject || '');
   const [message, setMessage] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const lastInitialRef = useRef<string | null>(null);
 
   // Focus textarea on mount
   useEffect(() => {
@@ -45,12 +44,9 @@ export function NewChatView({
   }, [composerDisabled]);
 
   useEffect(() => {
-    if (initialProject && initialProject !== lastInitialRef.current) {
-      lastInitialRef.current = initialProject;
-      setSelectedProject(initialProject);
-      onProjectSelected(initialProject);
-    }
-  }, [initialProject, onProjectSelected]);
+    if (!initialProject) return;
+    setSelectedProject(initialProject);
+  }, [initialProject]);
 
   const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
     setMessage(e.target.value);
@@ -101,7 +97,6 @@ export function NewChatView({
           selectedProject={selectedProject}
           recentProjects={recentProjects}
           onSelect={(path) => {
-            lastInitialRef.current = path;
             setSelectedProject(path);
             onProjectSelected(path);
           }}
