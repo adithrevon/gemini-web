@@ -447,7 +447,6 @@ body {
 
 .composer--disabled {
   opacity: 0.5;
-  pointer-events: none;
 }
 
 .composer__textarea {
@@ -488,6 +487,68 @@ body {
   justify-content: space-between;
   padding: var(--spacing-xs) var(--spacing-sm);
   border-top: 1px solid var(--color-border-subtle);
+}
+
+.composer__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.composer__status {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  min-width: 0;
+}
+
+.composer__status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.composer__status-dot--connected {
+  background: var(--color-success);
+  box-shadow: 0 0 6px var(--color-success);
+}
+
+.composer__status-dot--connecting {
+  background: var(--color-warning);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.composer__status-dot--error {
+  background: var(--color-error);
+}
+
+.composer__status-dot--idle {
+  background: var(--color-text-muted);
+}
+
+.composer__status-project {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer__status-retry {
+  margin-left: var(--spacing-xs);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.composer__status-retry:hover {
+  text-decoration: underline;
 }
 
 .composer__send {
@@ -643,9 +704,44 @@ body {
   font-size: 13px;
   color: var(--color-text-secondary);
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: var(--spacing-sm);
+}
+
+.connection-status__row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+}
+
+.connection-status__text {
+  line-height: 1.2;
+}
+
+.connection-status__project {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-status__retry {
+  margin-left: var(--spacing-xs);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--color-accent);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.connection-status__retry:hover {
+  text-decoration: underline;
 }
 
 .connection-status__dot {

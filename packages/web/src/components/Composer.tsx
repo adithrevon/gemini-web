@@ -1,5 +1,5 @@
 import { useRef, useEffect, KeyboardEvent, ChangeEvent, useState } from 'react';
-import type { ModelOption } from '../types';
+import type { ModelOption, InstanceStatus } from '../types';
 import { ModelSelector } from './ModelSelector';
 
 interface ComposerProps {
@@ -8,6 +8,9 @@ interface ComposerProps {
   currentModel: string;
   availableModels: ModelOption[];
   onModelChange: (model: string) => void;
+  status?: InstanceStatus;
+  projectPath?: string;
+  onRetry?: () => void;
 }
 
 export function Composer({
@@ -16,6 +19,9 @@ export function Composer({
   currentModel,
   availableModels,
   onModelChange,
+  status,
+  projectPath,
+  onRetry,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [value, setValue] = useState('');
@@ -55,6 +61,21 @@ export function Composer({
     }
   }, [disabled]);
 
+  const projectName = projectPath
+    ? projectPath.split('/').filter(Boolean).pop() || projectPath
+    : null;
+  const showStatus = Boolean(status || projectName);
+  const statusClass =
+    status === 'connected'
+      ? 'composer__status-dot--connected'
+      : status === 'connecting'
+        ? 'composer__status-dot--connecting'
+        : status === 'error'
+          ? 'composer__status-dot--error'
+          : status === 'disconnected'
+            ? 'composer__status-dot--error'
+            : 'composer__status-dot--idle';
+
   return (
     <div className={`composer ${disabled ? 'composer--disabled' : ''}`}>
       <textarea
@@ -68,23 +89,51 @@ export function Composer({
         rows={1}
       />
       <div className="composer__toolbar">
-        <ModelSelector
-          currentModel={currentModel}
-          availableModels={availableModels}
-          onSelect={onModelChange}
-          disabled={disabled}
-        />
-        <button
-          className="composer__send"
-          onClick={handleSubmit}
-          disabled={disabled || !value.trim()}
-          aria-label="Send message"
-        >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="12" y1="19" x2="12" y2="5" />
-            <polyline points="5 12 12 5 19 12" />
-          </svg>
-        </button>
+        {showStatus ? (
+          <div className="composer__status" title={projectPath ?? undefined}>
+            <span className={`composer__status-dot ${statusClass}`} />
+            {projectName ? (
+              <span className="composer__status-project">{projectName}</span>
+            ) : null}
+            {status === 'error' && onRetry ? (
+              <button
+                className="composer__status-retry"
+                onClick={onRetry}
+                type="button"
+              >
+                Retry
+              </button>
+            ) : null}
+          </div>
+        ) : (
+          <div />
+        )}
+        <div className="composer__actions">
+          <ModelSelector
+            currentModel={currentModel}
+            availableModels={availableModels}
+            onSelect={onModelChange}
+            disabled={disabled}
+          />
+          <button
+            className="composer__send"
+            onClick={handleSubmit}
+            disabled={disabled || !value.trim()}
+            aria-label="Send message"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <line x1="12" y1="19" x2="12" y2="5" />
+              <polyline points="5 12 12 5 19 12" />
+            </svg>
+          </button>
+        </div>
       </div>
     </div>
   );

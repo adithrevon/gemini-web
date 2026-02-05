@@ -17,6 +17,9 @@ const publicDir = existsSync(distDir) ? distDir : path.join(__dirname, 'public')
 
 const port = Number(process.env.GEMINI_WEB_PORT ?? '7337');
 const wsPath = process.env.GEMINI_WEB_WS_PATH ?? '/ws';
+const spawnTimeoutMs = Number(
+  process.env.GEMINI_WEB_SPAWN_TIMEOUT_MS ?? '18000',
+);
 const debug =
   process.env.GEMINI_WEB_DEBUG === '1' ||
   process.env.GEMINI_WEB_DEBUG === 'true';
@@ -35,38 +38,30 @@ const contentTypeByExt = new Map([
   ['.ico', 'image/x-icon'],
 ]);
 
-const server = http.createServer(async (req, res) => {
-  try {
-    const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-    const pathname = url.pathname === '/' ? '/index.html' : url.pathname;
-    const filePath = path.normalize(path.join(publicDir, pathname));
-
-    if (!filePath.startsWith(publicDir)) {
-      res.writeHead(403);
-      res.end('Forbidden');
-      return;
-    }
-
-    const data = await readFile(filePath);
-    const ext = path.extname(filePath);
-    res.writeHead(200, {
-      'Content-Type': contentTypeByExt.get(ext) ?? 'application/octet-stream',
-      'Cache-Control': 'no-cache',
-    });
-    res.end(data);
-  } catch (error) {
-    res.writeHead(404);
-    res.end('Not found');
+const readJsonBody = async (req) => {
+  const chunks = [];
+  for await (const chunk of req) {
+    chunks.push(chunk);
   }
-});
+  if (chunks.length === 0) return null;
+  try {
+    const text = Buffer.concat(chunks).toString('utf8');
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return null;
+  }
+};
 
-const wss = new WebSocketServer({ server, path: wsPath });
+const sendJson = (res, status, payload) => {
+  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(payload));
+};
 
 // Multi-instance tracking
-// Map: instanceId -> { cliSocket, projectPath, process }
+// Map: instanceId -> { id, sessionId, cliSocket, projectPath, process, status, error, lastSnapshot, spawnTimeout }
 const instances = new Map();
-// Set of connected web clients
-const webSockets = new Set();
+// Map: sessionId -> { id, activeInstanceId, instances, sseClients, lastSeenAt }
+const sessions = new Map();
 
 const isSocketOpen = (socket) =>
   socket && socket.readyState === WebSocket.OPEN;
@@ -91,12 +86,118 @@ const safeSend = (socket, payload) => {
   }
 };
 
-const broadcast = (payload) => {
-  const data = JSON.stringify(payload);
-  for (const socket of webSockets) {
-    if (!safeSend(socket, data)) {
-      webSockets.delete(socket);
+const sendSse = (res, payload) => {
+  try {
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  } catch {
+    // Ignore write errors; caller will clean up.
+  }
+};
+
+const createSession = () => {
+  const id = crypto.randomUUID();
+  const session = {
+    id,
+    activeInstanceId: null,
+    instances: new Set(),
+    sseClients: new Set(),
+    lastSeenAt: Date.now(),
+  };
+  sessions.set(id, session);
+  return session;
+};
+
+const getSessionInstances = (sessionId) => {
+  const session = sessions.get(sessionId);
+  if (!session) return [];
+  const list = [];
+  for (const instanceId of session.instances) {
+    const inst = instances.get(instanceId);
+    if (!inst) continue;
+    list.push({
+      id: inst.id,
+      projectPath: inst.projectPath,
+      connected: inst.status === 'connected',
+      status: inst.status,
+      error: inst.error,
+    });
+  }
+  return list;
+};
+
+const sendToSession = (sessionId, payload) => {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  session.lastSeenAt = Date.now();
+  for (const res of session.sseClients) {
+    try {
+      sendSse(res, payload);
+    } catch {
+      session.sseClients.delete(res);
     }
+  }
+};
+
+const broadcastToAllSessions = (payload) => {
+  for (const session of sessions.values()) {
+    sendToSession(session.id, payload);
+  }
+};
+
+const sendInstanceList = (sessionId) => {
+  const instancesList = getSessionInstances(sessionId);
+  sendToSession(sessionId, {
+    type: 'bridge:instance-list',
+    instances: instancesList,
+  });
+};
+
+const sendSessionState = (session, res) => {
+  const instancesList = getSessionInstances(session.id);
+  const snapshots = [];
+  for (const instInfo of instancesList) {
+    const inst = instances.get(instInfo.id);
+    if (inst?.lastSnapshot) {
+      snapshots.push(inst.lastSnapshot);
+    }
+  }
+  sendSse(res, {
+    type: 'session_state',
+    sessionId: session.id,
+    activeInstanceId: session.activeInstanceId ?? null,
+    instances: instancesList,
+    snapshots,
+  });
+};
+
+const markInstanceError = (instanceId, message) => {
+  const inst = instances.get(instanceId);
+  if (!inst) return;
+  if (inst.spawnTimeout) {
+    clearTimeout(inst.spawnTimeout);
+    inst.spawnTimeout = null;
+  }
+  if (inst.cliSocket) {
+    inst.cliSocket.close();
+    inst.cliSocket = null;
+  }
+  inst.status = 'error';
+  inst.error = message;
+  inst.process = null;
+  if (inst.sessionId) {
+    sendToSession(inst.sessionId, {
+      type: 'bridge:error',
+      instanceId,
+      error: message,
+    });
+    sendToSession(inst.sessionId, {
+      type: 'bridge:cli-status',
+      connected: false,
+      instanceId,
+      status: 'error',
+      error: message,
+    });
+    sendInstanceList(inst.sessionId);
   }
 };
 
@@ -111,19 +212,7 @@ const expandTilde = (filePath) => {
   return filePath;
 };
 
-const broadcastInstanceList = () => {
-  const instanceList = [];
-  for (const [id, inst] of instances) {
-    instanceList.push({
-      id,
-      projectPath: inst.projectPath,
-      connected: isSocketOpen(inst.cliSocket),
-    });
-  }
-  broadcast({ type: 'bridge:instance-list', instances: instanceList });
-};
-
-const spawnCliInstance = async (instanceId, projectPath) => {
+const spawnCliInstance = async (instanceId, projectPath, sessionId) => {
   const defaultBundle = path.join(rootDir, 'bundle', 'gemini.js');
   const distEntry = path.join(rootDir, 'packages', 'cli', 'dist', 'index.js');
   const cliEntry =
@@ -143,9 +232,14 @@ const spawnCliInstance = async (instanceId, projectPath) => {
   // Expand and validate project path
   const expandedPath = expandTilde(projectPath);
   const cwd = existsSync(expandedPath) ? expandedPath : rootDir;
-  
-  log('spawn cli', { instanceId, requestedPath: projectPath, resolvedPath: cwd, cliEntry });
-  
+
+  log('spawn cli', {
+    instanceId,
+    requestedPath: projectPath,
+    resolvedPath: cwd,
+    cliEntry,
+  });
+
   const outputBuffer = [];
   const bufferLimit = 20000;
   const recordOutput = (chunk) => {
@@ -159,16 +253,43 @@ const spawnCliInstance = async (instanceId, projectPath) => {
     }
   };
 
-  // Store instance info before spawning
   instances.set(instanceId, {
+    id: instanceId,
+    sessionId,
     cliSocket: null,
     projectPath: cwd,
     process: null,
     outputBuffer,
+    status: 'connecting',
+    error: null,
+    lastSnapshot: null,
+    spawnTimeout: null,
   });
 
-  // Notify web clients about new instance
-  broadcast({ type: 'bridge:cli-status', connected: false, instanceId });
+  const session = sessions.get(sessionId);
+  if (session) {
+    session.instances.add(instanceId);
+    session.activeInstanceId = instanceId;
+  }
+
+  sendToSession(sessionId, {
+    type: 'bridge:cli-status',
+    connected: false,
+    instanceId,
+    status: 'connecting',
+  });
+  sendInstanceList(sessionId);
+
+  const scheduleSpawnTimeout = () => {
+    const timeout = setTimeout(() => {
+      const inst = instances.get(instanceId);
+      if (!inst || inst.status === 'connected') return;
+      markInstanceError(instanceId, 'CLI failed to connect');
+    }, spawnTimeoutMs);
+    instances.get(instanceId).spawnTimeout = timeout;
+  };
+
+  scheduleSpawnTimeout();
 
   try {
     const ptyModule = await import('node-pty');
@@ -198,14 +319,12 @@ const spawnCliInstance = async (instanceId, projectPath) => {
         console.log(`[web] CLI ${instanceId} output (tail)`);
         console.log(outputBuffer.join('').slice(-bufferLimit));
       }
-      // Cleanup instance
       const inst = instances.get(instanceId);
-      if (inst?.cliSocket) {
-        inst.cliSocket.close();
+      if (inst && inst.status !== 'connected') {
+        markInstanceError(instanceId, 'CLI failed to start');
+        return;
       }
-      instances.delete(instanceId);
-      broadcast({ type: 'bridge:cli-status', connected: false, instanceId });
-      broadcastInstanceList();
+      cleanupInstance(instanceId, 'exit');
     });
   } catch (error) {
     console.log('[web] node-pty not available; falling back to spawn().');
@@ -225,22 +344,59 @@ const spawnCliInstance = async (instanceId, projectPath) => {
     child.stderr.on('data', recordOutput);
 
     child.on('exit', (code) => {
-      console.log(`[web] CLI instance ${instanceId} exited with code ${code ?? 'unknown'}.`);
+      console.log(
+        `[web] CLI instance ${instanceId} exited with code ${code ?? 'unknown'}.`,
+      );
       if (debug && outputBuffer.length > 0) {
         console.log(`[web] CLI ${instanceId} output (tail)`);
         console.log(outputBuffer.join('').slice(-bufferLimit));
       }
-      // Cleanup instance
       const inst = instances.get(instanceId);
-      if (inst?.cliSocket) {
-        inst.cliSocket.close();
+      if (inst && inst.status !== 'connected') {
+        markInstanceError(instanceId, 'CLI failed to start');
+        return;
       }
-      instances.delete(instanceId);
-      broadcast({ type: 'bridge:cli-status', connected: false, instanceId });
-      broadcastInstanceList();
+      cleanupInstance(instanceId, 'exit');
     });
     child.on('error', (err) => {
       console.log(`[web] CLI ${instanceId} spawn error`, err);
+      markInstanceError(instanceId, 'CLI failed to start');
+    });
+  }
+};
+
+const cleanupInstance = (instanceId, reason) => {
+  const inst = instances.get(instanceId);
+  if (!inst) return;
+  if (inst.spawnTimeout) {
+    clearTimeout(inst.spawnTimeout);
+  }
+  if (inst.cliSocket) {
+    inst.cliSocket.close();
+  }
+  const sessionId = inst.sessionId;
+  instances.delete(instanceId);
+  if (sessionId) {
+    const session = sessions.get(sessionId);
+    if (session) {
+      session.instances.delete(instanceId);
+      if (session.activeInstanceId === instanceId) {
+        session.activeInstanceId = null;
+      }
+    }
+    sendToSession(sessionId, {
+      type: 'bridge:cli-status',
+      connected: false,
+      instanceId,
+      status: 'disconnected',
+    });
+    sendInstanceList(sessionId);
+  } else if (reason !== 'exit') {
+    broadcastToAllSessions({
+      type: 'bridge:cli-status',
+      connected: false,
+      instanceId,
+      status: 'disconnected',
     });
   }
 };
@@ -252,8 +408,11 @@ const terminateInstance = (instanceId) => {
     return;
   }
   log('terminate instance', instanceId);
-  
-  // Kill the process
+
+  if (inst.spawnTimeout) {
+    clearTimeout(inst.spawnTimeout);
+  }
+
   if (inst.process) {
     if (typeof inst.process.kill === 'function') {
       inst.process.kill();
@@ -261,16 +420,186 @@ const terminateInstance = (instanceId) => {
       inst.process.destroy();
     }
   }
-  
-  // Close the socket
+
   if (inst.cliSocket) {
     inst.cliSocket.close();
   }
-  
-  instances.delete(instanceId);
-  broadcast({ type: 'bridge:cli-status', connected: false, instanceId });
-  broadcastInstanceList();
+
+  cleanupInstance(instanceId, 'terminate');
 };
+
+const server = http.createServer(async (req, res) => {
+  try {
+    const url = new URL(
+      req.url ?? '/',
+      `http://${req.headers.host ?? 'localhost'}`,
+    );
+
+    if (url.pathname === '/api/session' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const requestedId =
+        body && typeof body.sessionId === 'string' ? body.sessionId : null;
+      const session =
+        requestedId && sessions.has(requestedId)
+          ? sessions.get(requestedId)
+          : createSession();
+      session.lastSeenAt = Date.now();
+      sendJson(res, 200, { sessionId: session.id });
+      return;
+    }
+
+    if (url.pathname.startsWith('/api/session/')) {
+      const parts = url.pathname.split('/').filter(Boolean);
+      const rawSessionId = parts[2];
+      const action = parts[3];
+      const sessionId = rawSessionId ? decodeURIComponent(rawSessionId) : null;
+      if (!sessionId) {
+        sendJson(res, 404, { error: 'Session not found' });
+        return;
+      }
+      const session = sessions.get(sessionId);
+      if (!session) {
+        sendJson(res, 404, { error: 'Session not found' });
+        return;
+      }
+
+      if (action === 'events' && req.method === 'GET') {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no',
+        });
+        res.write('\n');
+
+        session.sseClients.add(res);
+        session.lastSeenAt = Date.now();
+        sendSessionState(session, res);
+
+        req.on('close', () => {
+          session.sseClients.delete(res);
+        });
+        return;
+      }
+
+      if (action === 'command' && req.method === 'POST') {
+        const body = await readJsonBody(req);
+        if (!body || typeof body.type !== 'string') {
+          sendJson(res, 400, { error: 'Invalid payload' });
+          return;
+        }
+        session.lastSeenAt = Date.now();
+
+        if (body.type === 'spawnInstance') {
+          const projectPath =
+            typeof body.projectPath === 'string' ? body.projectPath : '';
+          if (!projectPath) {
+            sendJson(res, 400, { error: 'Missing projectPath' });
+            return;
+          }
+          const instanceId = crypto.randomUUID();
+          void spawnCliInstance(instanceId, projectPath, sessionId);
+          sendJson(res, 200, { instanceId });
+          return;
+        }
+
+        if (body.type === 'terminateInstance') {
+          const instanceId =
+            typeof body.instanceId === 'string' ? body.instanceId : '';
+          if (!instanceId) {
+            sendJson(res, 400, { error: 'Missing instanceId' });
+            return;
+          }
+          const inst = instances.get(instanceId);
+          if (!inst || inst.sessionId !== sessionId) {
+            sendJson(res, 403, { error: 'Instance not found in session' });
+            return;
+          }
+          terminateInstance(instanceId);
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+
+        if (body.type === 'setActiveInstance') {
+          const instanceId =
+            typeof body.instanceId === 'string' ? body.instanceId : '';
+          if (instanceId) {
+            const inst = instances.get(instanceId);
+            if (!inst || inst.sessionId !== sessionId) {
+              sendJson(res, 403, { error: 'Instance not found in session' });
+              return;
+            }
+          }
+          session.activeInstanceId = instanceId || null;
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+
+        if (
+          body.type === 'submit' ||
+          body.type === 'confirm' ||
+          body.type === 'setModel'
+        ) {
+          const instanceId =
+            typeof body.instanceId === 'string' ? body.instanceId : '';
+          if (!instanceId) {
+            sendJson(res, 400, { error: 'Missing instanceId' });
+            return;
+          }
+          const inst = instances.get(instanceId);
+          if (!inst || inst.sessionId !== sessionId) {
+            sendJson(res, 403, { error: 'Instance not found in session' });
+            return;
+          }
+          if (!inst || !isSocketOpen(inst.cliSocket)) {
+            sendToSession(sessionId, {
+              type: 'bridge:cli-status',
+              connected: false,
+              instanceId,
+              status: 'disconnected',
+            });
+            sendInstanceList(sessionId);
+            sendJson(res, 409, { error: 'CLI not connected' });
+            return;
+          }
+
+          const { instanceId: _, ...forwardMessage } = body;
+          safeSend(inst.cliSocket, JSON.stringify(forwardMessage));
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+
+        sendJson(res, 400, { error: 'Unsupported command' });
+        return;
+      }
+
+      sendJson(res, 404, { error: 'Not found' });
+      return;
+    }
+
+    const pathname = url.pathname === '/' ? '/index.html' : url.pathname;
+    const filePath = path.normalize(path.join(publicDir, pathname));
+
+    if (!filePath.startsWith(publicDir)) {
+      res.writeHead(403);
+      res.end('Forbidden');
+      return;
+    }
+
+    const data = await readFile(filePath);
+    const ext = path.extname(filePath);
+    res.writeHead(200, {
+      'Content-Type': contentTypeByExt.get(ext) ?? 'application/octet-stream',
+      'Cache-Control': 'no-cache',
+    });
+    res.end(data);
+  } catch (error) {
+    res.writeHead(404);
+    res.end('Not found');
+  }
+});
+
+const wss = new WebSocketServer({ server, path: wsPath });
 
 wss.on('connection', (socket) => {
   let role = 'unknown';
@@ -284,16 +613,8 @@ wss.on('connection', (socket) => {
     if (message.type === 'bridge:hello') {
       role = message.role === 'cli' ? 'cli' : 'web';
       log('hello', role);
-      
-      if (role === 'cli') {
-        // CLI connecting - need to find which instance this is
-        // The CLI will send GEMINI_INSTANCE_ID in its first update
-        // For now, store socket temporarily
-        boundInstanceId = null;
-      } else {
-        webSockets.add(socket);
-        // Send current instance list to new web client
-        broadcastInstanceList();
+      if (role !== 'cli') {
+        socket.close();
       }
       return;
     }
@@ -306,80 +627,71 @@ wss.on('connection', (socket) => {
         pending: message.payload?.pending?.length ?? 0,
         streamingState: message.payload?.streamingState ?? 'unknown',
       });
-      
-      // Bind this socket to the instance
+
       if (instanceId && !boundInstanceId) {
         boundInstanceId = instanceId;
-        const inst = instances.get(instanceId);
+        let inst = instances.get(instanceId);
         if (inst) {
           inst.cliSocket = socket;
-          broadcast({ type: 'bridge:cli-status', connected: true, instanceId });
         } else {
-          // Instance started externally (e.g., for development)
-          instances.set(instanceId, {
+          inst = {
+            id: instanceId,
+            sessionId: null,
             cliSocket: socket,
             projectPath: message.payload?.projectPath ?? '',
             process: null,
             outputBuffer: [],
-          });
-          broadcast({ type: 'bridge:cli-status', connected: true, instanceId });
+            status: 'connected',
+            error: null,
+            lastSnapshot: null,
+            spawnTimeout: null,
+          };
+          instances.set(instanceId, inst);
         }
-        broadcastInstanceList();
-      }
-      
-      broadcast(message);
-      return;
-    }
+        if (inst.spawnTimeout) {
+          clearTimeout(inst.spawnTimeout);
+          inst.spawnTimeout = null;
+        }
+        inst.status = 'connected';
+        inst.error = null;
 
-    // Messages from web clients
-    if (role === 'web') {
-      if (message.type === 'spawnInstance') {
-        const instanceId = crypto.randomUUID();
-        log('spawn request', { instanceId, projectPath: message.projectPath });
-        spawnCliInstance(instanceId, message.projectPath);
-        return;
-      }
-
-      if (message.type === 'terminateInstance') {
-        log('terminate request', message.instanceId);
-        terminateInstance(message.instanceId);
-        return;
-      }
-
-      if (message.type === 'setActiveInstance') {
-        // Just acknowledgement, no action needed server-side
-        log('setActiveInstance', message.instanceId);
-        return;
-      }
-
-      // Route messages to specific instance
-      if (message.type === 'submit' || message.type === 'confirm' || message.type === 'setModel') {
-        const instanceId = message.instanceId;
-        const inst = instances.get(instanceId);
-        
-        if (message.type === 'submit') {
-          log('submit from web', { instanceId, length: message.text?.length ?? 0 });
-        } else if (message.type === 'confirm') {
-          log('confirm from web', {
+        if (inst.sessionId) {
+          sendToSession(inst.sessionId, {
+            type: 'bridge:cli-status',
+            connected: true,
             instanceId,
-            callId: message.callId,
-            outcome: message.outcome,
-            correlationId: message.correlationId,
+            status: 'connected',
           });
-        } else if (message.type === 'setModel') {
-          log('setModel from web', { instanceId, model: message.model });
+          sendInstanceList(inst.sessionId);
+        } else {
+          broadcastToAllSessions({
+            type: 'bridge:cli-status',
+            connected: true,
+            instanceId,
+            status: 'connected',
+          });
         }
-        
-        if (!inst || !isSocketOpen(inst.cliSocket)) {
-          log('instance not connected', instanceId);
-          broadcast({ type: 'bridge:cli-status', connected: false, instanceId });
-          return;
-        }
-        
-        // Forward to CLI (remove instanceId from message as CLI doesn't need it)
-        const { instanceId: _, ...forwardMessage } = message;
-        safeSend(inst.cliSocket, JSON.stringify(forwardMessage));
       }
+
+      const inst = instanceId ? instances.get(instanceId) : null;
+      if (inst) {
+        if (inst.spawnTimeout) {
+          clearTimeout(inst.spawnTimeout);
+          inst.spawnTimeout = null;
+        }
+        inst.status = 'connected';
+        inst.error = null;
+        inst.lastSnapshot = message.payload;
+        if (message.payload?.projectPath) {
+          inst.projectPath = message.payload.projectPath;
+        }
+        if (inst.sessionId) {
+          sendToSession(inst.sessionId, message);
+        } else {
+          broadcastToAllSessions(message);
+        }
+      }
+      return;
     }
   });
 
@@ -389,17 +701,29 @@ wss.on('connection', (socket) => {
 
   socket.on('close', () => {
     log('ws close', role, boundInstanceId);
-    if (role === 'web') {
-      webSockets.delete(socket);
-      return;
-    }
-
     if (role === 'cli' && boundInstanceId) {
       const inst = instances.get(boundInstanceId);
       if (inst && inst.cliSocket === socket) {
         inst.cliSocket = null;
-        broadcast({ type: 'bridge:cli-status', connected: false, instanceId: boundInstanceId });
-        broadcastInstanceList();
+        inst.status = inst.status === 'error' ? 'error' : 'disconnected';
+        if (inst.sessionId) {
+          sendToSession(inst.sessionId, {
+            type: 'bridge:cli-status',
+            connected: false,
+            instanceId: boundInstanceId,
+            status: inst.status,
+            error: inst.error,
+          });
+          sendInstanceList(inst.sessionId);
+        } else {
+          broadcastToAllSessions({
+            type: 'bridge:cli-status',
+            connected: false,
+            instanceId: boundInstanceId,
+            status: inst.status,
+            error: inst.error,
+          });
+        }
       }
     }
   });

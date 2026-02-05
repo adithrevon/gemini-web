@@ -1,4 +1,4 @@
-import type { InstanceState } from '../useWebSocket';
+import type { InstanceState } from '../useSession';
 
 interface Project {
   path: string;

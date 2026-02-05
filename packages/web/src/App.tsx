@@ -1,8 +1,7 @@
 import { useState, useCallback } from 'react';
-import { useWebSocket } from './useWebSocket';
+import { useSession } from './useSession';
 import {
   Composer,
-  ConnectionStatus,
   MessageList,
   Sidebar,
   ProjectList,
@@ -22,7 +21,7 @@ export default function App() {
     sendSetModel,
     spawnInstance,
     terminateInstance,
-  } = useWebSocket();
+  } = useSession();
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [showNewChat, setShowNewChat] = useState(false);
@@ -30,19 +29,25 @@ export default function App() {
     null,
   );
 
+  const handleProjectSelected = useCallback(
+    (projectPath: string) => {
+      setPendingProjectPath(projectPath);
+      void spawnInstance(projectPath);
+    },
+    [spawnInstance],
+  );
+
   // Handle starting a new chat from the NewChatView
   const handleStartChat = useCallback(
-    (projectPath: string, initialMessage: string) => {
-      // Spawn a new instance and queue the initial message
-      setPendingProjectPath(projectPath);
-      spawnInstance(projectPath);
-      // The initial message will be sent once the instance connects
-      // For now, we'll store it and send when we get the first update
-      sessionStorage.setItem('pendingMessage', initialMessage);
+    (initialMessage: string) => {
+      if (!activeInstance || activeInstance.status !== 'connected') {
+        return;
+      }
+      sendSubmit(initialMessage);
       setShowNewChat(false);
       setSidebarOpen(false);
     },
-    [spawnInstance],
+    [activeInstance, sendSubmit],
   );
 
   // Handle new chat button from sidebar (under existing project)
@@ -59,14 +64,6 @@ export default function App() {
     setSidebarOpen(false);
   }, []);
 
-  // Check if there's a pending message to send
-  const pendingMessage = sessionStorage.getItem('pendingMessage');
-  if (pendingMessage && activeInstance?.status === 'connected') {
-    sessionStorage.removeItem('pendingMessage');
-    // Small delay to ensure the instance is ready
-    setTimeout(() => sendSubmit(pendingMessage), 100);
-  }
-
   // Determine layout state
   const hasActiveChat = activeInstance && !showNewChat;
   const hasMessages =
@@ -74,6 +71,34 @@ export default function App() {
     (activeInstance.history.length > 0 || activeInstance.pending.length > 0);
   const isDisabled =
     !connected || !activeInstance || activeInstance.status !== 'connected';
+  const hasSelectedProject = Boolean(pendingProjectPath);
+  const newChatReady =
+    connected &&
+    activeInstance &&
+    activeInstance.status === 'connected' &&
+    (!hasSelectedProject ||
+      activeInstance.projectPath === pendingProjectPath);
+  const newChatDisabled = !hasSelectedProject || !newChatReady;
+  const statusInstance = showNewChat
+    ? hasSelectedProject && activeInstance?.projectPath === pendingProjectPath
+      ? activeInstance
+      : null
+    : activeInstance;
+  const statusProjectPath = showNewChat
+    ? pendingProjectPath ?? statusInstance?.projectPath
+    : statusInstance?.projectPath;
+  const displayStatus = showNewChat
+    ? hasSelectedProject
+      ? statusInstance?.status ?? 'connecting'
+      : undefined
+    : statusInstance?.status;
+
+  const handleRetry = useCallback(() => {
+    if (!statusInstance || !statusInstance.projectPath) return;
+    if (statusInstance.status !== 'error') return;
+    terminateInstance(statusInstance.id);
+    void spawnInstance(statusInstance.projectPath);
+  }, [statusInstance, spawnInstance, terminateInstance]);
 
   // Default available models for new chat view
   const defaultModels = [
@@ -122,15 +147,17 @@ export default function App() {
                       ]
                     : recentProjects
                 }
-                onStartChat={handleStartChat}
-                disabled={false}
+                initialProject={pendingProjectPath ?? undefined}
+                onProjectSelected={handleProjectSelected}
+                onSubmitMessage={handleStartChat}
+                projectSelectorDisabled={false}
+                composerDisabled={newChatDisabled}
+                status={displayStatus}
+                projectPath={statusProjectPath}
+                onRetry={handleRetry}
                 availableModels={defaultModels}
                 currentModel="auto-gemini-2.5"
                 onModelChange={() => {}} // Model will be set after instance spawns
-              />
-              <ConnectionStatus
-                connected={connected}
-                cliConnected={instances.size > 0}
               />
             </div>
           </div>
@@ -157,10 +184,9 @@ export default function App() {
                   activeInstance?.availableModels ?? defaultModels
                 }
                 onModelChange={sendSetModel}
-              />
-              <ConnectionStatus
-                connected={connected}
-                cliConnected={activeInstance?.status === 'connected'}
+                status={displayStatus}
+                projectPath={statusProjectPath}
+                onRetry={handleRetry}
               />
             </div>
           </div>

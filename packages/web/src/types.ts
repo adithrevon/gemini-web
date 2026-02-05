@@ -59,6 +59,12 @@ export type Message = UserMessage | GeminiMessage | ToolGroupMessage;
 
 export type StreamingState = 'idle' | 'responding' | 'tool';
 
+export type InstanceStatus =
+  | 'connecting'
+  | 'connected'
+  | 'disconnected'
+  | 'error';
+
 export interface ModelOption {
   value: string;
   label: string;
@@ -93,6 +99,8 @@ export interface BridgeCliStatusMessage {
   type: 'bridge:cli-status';
   connected: boolean;
   instanceId?: string;
+  status?: InstanceStatus;
+  error?: string;
 }
 
 export interface BridgeInstanceListMessage {
@@ -101,7 +109,29 @@ export interface BridgeInstanceListMessage {
     id: string;
     projectPath: string;
     connected: boolean;
+    status?: InstanceStatus;
+    error?: string;
   }>;
+}
+
+export interface BridgeErrorMessage {
+  type: 'bridge:error';
+  instanceId?: string;
+  error: string;
+}
+
+export interface SessionStateMessage {
+  type: 'session_state';
+  sessionId: string;
+  activeInstanceId: string | null;
+  instances: Array<{
+    id: string;
+    projectPath: string;
+    connected: boolean;
+    status?: InstanceStatus;
+    error?: string;
+  }>;
+  snapshots: BridgeUpdatePayload[];
 }
 
 export interface SubmitMessage {
@@ -143,7 +173,9 @@ export interface SetActiveInstanceMessage {
 export type IncomingMessage =
   | BridgeUpdateMessage
   | BridgeCliStatusMessage
-  | BridgeInstanceListMessage;
+  | BridgeInstanceListMessage
+  | BridgeErrorMessage
+  | SessionStateMessage;
 export type OutgoingMessage =
   | BridgeHelloMessage
   | SubmitMessage

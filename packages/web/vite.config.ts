@@ -16,6 +16,10 @@ export default defineConfig({
         ws: true,
         changeOrigin: true,
       },
+      '/api': {
+        target: 'http://localhost:7337',
+        changeOrigin: true,
+      },
     },
     allowedHosts: ['prems-mac-mini.tailcb69a0.ts.net'],
   },
