@@ -76,8 +76,7 @@ export default function App() {
     connected &&
     activeInstance &&
     activeInstance.status === 'connected' &&
-    (!hasSelectedProject ||
-      activeInstance.projectPath === pendingProjectPath);
+    (!hasSelectedProject || activeInstance.projectPath === pendingProjectPath);
   const newChatDisabled = !hasSelectedProject || !newChatReady;
   const statusInstance = showNewChat
     ? hasSelectedProject && activeInstance?.projectPath === pendingProjectPath
@@ -85,11 +84,11 @@ export default function App() {
       : null
     : activeInstance;
   const statusProjectPath = showNewChat
-    ? pendingProjectPath ?? statusInstance?.projectPath
+    ? (pendingProjectPath ?? statusInstance?.projectPath)
     : statusInstance?.projectPath;
   const displayStatus = showNewChat
     ? hasSelectedProject
-      ? statusInstance?.status ?? 'connecting'
+      ? (statusInstance?.status ?? 'connecting')
       : undefined
     : statusInstance?.status;
 

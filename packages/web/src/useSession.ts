@@ -224,7 +224,11 @@ export function useSession(): UseSessionReturn {
         return;
       }
       log('send setModel', { instanceId: activeInstanceId, model });
-      void sendCommand({ type: 'setModel', model, instanceId: activeInstanceId });
+      void sendCommand({
+        type: 'setModel',
+        model,
+        instanceId: activeInstanceId,
+      });
     },
     [sendCommand, activeInstanceId],
   );
@@ -319,8 +323,7 @@ export function useSession(): UseSessionReturn {
         const next = new Map(prev);
         const existing = next.get(message.instanceId!);
         const status: InstanceStatus =
-          message.status ??
-          (message.connected ? 'connected' : 'disconnected');
+          message.status ?? (message.connected ? 'connected' : 'disconnected');
         if (existing) {
           next.set(message.instanceId!, {
             ...existing,
@@ -392,7 +395,7 @@ export function useSession(): UseSessionReturn {
           return message.instances[0]?.id ?? null;
         }
         const exists = message.instances.some((inst) => inst.id === current);
-        return exists ? current : message.instances[0]?.id ?? null;
+        return exists ? current : (message.instances[0]?.id ?? null);
       });
     },
     [],
@@ -535,7 +538,14 @@ export function useSession(): UseSessionReturn {
         eventSourceRef.current.close();
       }
     };
-  }, [applyBridgeUpdate, applyCliStatus, applyError, applyInstanceList, applySessionState, ensureSession]);
+  }, [
+    applyBridgeUpdate,
+    applyCliStatus,
+    applyError,
+    applyInstanceList,
+    applySessionState,
+    ensureSession,
+  ]);
 
   return {
     connected,

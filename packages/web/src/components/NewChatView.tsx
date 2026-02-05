@@ -32,9 +32,7 @@ export function NewChatView({
   onModelChange,
   initialProject,
 }: NewChatViewProps) {
-  const [selectedProject, setSelectedProject] = useState(
-    initialProject || '',
-  );
+  const [selectedProject, setSelectedProject] = useState(initialProject || '');
   const [message, setMessage] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const lastInitialRef = useRef<string | null>(null);
@@ -111,7 +109,9 @@ export function NewChatView({
         />
       </div>
 
-      <div className={`composer ${composerDisabled ? 'composer--disabled' : ''}`}>
+      <div
+        className={`composer ${composerDisabled ? 'composer--disabled' : ''}`}
+      >
         <textarea
           ref={textareaRef}
           className="composer__textarea"

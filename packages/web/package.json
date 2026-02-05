@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "concurrently \"vite\" \"node server.mjs\"",
+    "dev": "concurrently \"vite --host 0.0.0.0\" \"node server.mjs\"",
     "dev:debug": "concurrently \"vite --host 0.0.0.0\" \"GEMINI_WEB_DEBUG=1 GEMINI_WEB_CLI_LOG=1 node server.mjs\"",
     "build": "vite build",
     "start": "node server.mjs",
