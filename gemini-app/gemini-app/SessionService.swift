@@ -98,33 +98,95 @@ final class SessionService: NSObject {
     }
     
     private func startConnection() async {
+        print("╔══════════════════════════════════════════════════════════════")
+        print("║ [SessionService] Starting connection")
+        print("║ Server URL: \(Self.defaultServerURL)")
+        print("║ Base URL: \(baseURL)")
+        print("╚══════════════════════════════════════════════════════════════")
         do {
             let sid = try await ensureSession()
+            print("[SessionService] ✅ Got session ID: \(sid)")
             sessionId = sid
             connectSSE(sessionId: sid)
         } catch {
+            print("[SessionService] ❌ Connection failed: \(error.localizedDescription)")
+            await diagnoseNetworkIssue(error: error)
             delegate?.sessionService(self, didDisconnect: error)
             scheduleReconnect()
         }
     }
     
+    private func diagnoseNetworkIssue(error: Error) async {
+        print("\n╔══════════════════════════════════════════════════════════════")
+        print("║ [SessionService] 🔍 NETWORK DIAGNOSTICS")
+        print("╠══════════════════════════════════════════════════════════════")
+        
+        // Check if general internet is reachable
+        print("║ Testing general internet (google.com)...")
+        do {
+            let googleURL = URL(string: "https://www.google.com")!
+            var request = URLRequest(url: googleURL)
+            request.timeoutInterval = 5
+            let (_, response) = try await URLSession.shared.data(for: request)
+            if let httpResponse = response as? HTTPURLResponse {
+                print("║ ✅ Internet reachable - Google returned: \(httpResponse.statusCode)")
+            }
+        } catch {
+            print("║ ❌ Internet NOT reachable - Google failed: \(error.localizedDescription)")
+        }
+        
+        // Check if our server is reachable
+        print("║ Testing server endpoint: \(baseURL)")
+        do {
+            var request = URLRequest(url: baseURL)
+            request.httpMethod = "HEAD"
+            request.timeoutInterval = 5
+            let (_, response) = try await URLSession.shared.data(for: request)
+            if let httpResponse = response as? HTTPURLResponse {
+                print("║ ✅ Server reachable - Status: \(httpResponse.statusCode)")
+            }
+        } catch {
+            print("║ ❌ Server NOT reachable: \(error.localizedDescription)")
+        }
+        
+        print("╚══════════════════════════════════════════════════════════════\n")
+    }
+    
     private func ensureSession() async throws -> String {
         let existingId = loadSessionId()
+        let url = baseURL.appendingPathComponent("/api/session")
         
-        var request = URLRequest(url: baseURL.appendingPathComponent("/api/session"))
+        print("[SessionService] 📡 POST \(url)")
+        print("[SessionService] Existing session ID: \(existingId ?? "none")")
+        
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 30
         
         if let existingId = existingId {
             let body = ["sessionId": existingId]
             request.httpBody = try JSONEncoder().encode(body)
+            print("[SessionService] Request body: {sessionId: \"\(existingId)\"}")
         } else {
             request.httpBody = "{}".data(using: .utf8)
+            print("[SessionService] Request body: {}")
         }
         
         let (data, response) = try await URLSession.shared.data(for: request)
         
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            print("[SessionService] ❌ Invalid response type")
+            throw SessionError.sessionCreationFailed
+        }
+        
+        print("[SessionService] Response status: \(httpResponse.statusCode)")
+        
+        guard httpResponse.statusCode == 200 else {
+            print("[SessionService] ❌ Non-200 status code")
+            if let responseBody = String(data: data, encoding: .utf8) {
+                print("[SessionService] Response body: \(responseBody)")
+            }
             throw SessionError.sessionCreationFailed
         }
         
@@ -134,9 +196,11 @@ final class SessionService: NSObject {
         
         let sessionResponse = try JSONDecoder().decode(SessionResponse.self, from: data)
         guard let sessionId = sessionResponse.sessionId else {
+            print("[SessionService] ❌ No sessionId in response")
             throw SessionError.sessionCreationFailed
         }
         
+        print("[SessionService] ✅ Session created: \(sessionId)")
         saveSessionId(sessionId)
         return sessionId
     }

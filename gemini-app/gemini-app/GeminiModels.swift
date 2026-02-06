@@ -4,6 +4,7 @@ enum StreamingState: String, Codable {
     case idle
     case responding
     case tool
+    case waiting_for_confirmation
 }
 
 enum InstanceStatus: String, Codable {
