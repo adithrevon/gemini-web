@@ -36,14 +36,29 @@ final class SessionStore: SessionServiceDelegate {
     }
     
     // MARK: - Connection
-    
+
     func connect() {
         service.connect()
     }
-    
+
     func disconnect() {
         service.disconnect()
         connected = false
+    }
+
+    /// Called when server is changed - clears state and reconnects
+    func switchServer() {
+        disconnect()
+
+        // Clear all instance state
+        instances.removeAll()
+        activeInstanceId = nil
+
+        // Reload recent projects for the new server
+        recentProjects = service.loadRecentProjects()
+
+        // Reconnect to new server
+        connect()
     }
     
     // MARK: - Instance Management
@@ -63,7 +78,7 @@ final class SessionStore: SessionServiceDelegate {
                 pending: [],
                 streamingState: .idle,
                 isTrustedFolder: false,
-                currentModel: "auto-gemini-2.5",
+                currentModel: AppConstants.defaultModel,
                 availableModels: [],
                 error: nil
             )
@@ -71,7 +86,6 @@ final class SessionStore: SessionServiceDelegate {
             activeInstanceId = instanceId
             return instanceId
         } catch {
-            print("[SessionStore] spawnInstance failed: \(error)")
             return nil
         }
     }
@@ -98,6 +112,24 @@ final class SessionStore: SessionServiceDelegate {
         }
     }
     
+    // MARK: - Directory Browsing
+
+    func browseDirectory(_ path: String?) async -> DirectoryListing? {
+        do {
+            return try await service.browseDirectory(path)
+        } catch {
+            return nil
+        }
+    }
+
+    func validatePath(_ path: String) async -> PathValidation? {
+        do {
+            return try await service.validatePath(path)
+        } catch {
+            return nil
+        }
+    }
+
     // MARK: - Message Sending
     
     func sendSubmit(_ text: String) {
@@ -118,9 +150,17 @@ final class SessionStore: SessionServiceDelegate {
     
     func sendSetModel(_ model: String) {
         guard let instanceId = activeInstanceId else { return }
-        
+
         Task {
             try? await service.setModel(model, instanceId: instanceId)
+        }
+    }
+
+    func sendInterrupt() {
+        guard let instanceId = activeInstanceId else { return }
+
+        Task {
+            try? await service.interrupt(instanceId)
         }
     }
     
@@ -182,7 +222,7 @@ final class SessionStore: SessionServiceDelegate {
                 pending: [],
                 streamingState: .idle,
                 isTrustedFolder: false,
-                currentModel: "auto-gemini-2.5",
+                currentModel: AppConstants.defaultModel,
                 availableModels: [],
                 error: info.error
             )
@@ -259,7 +299,7 @@ final class SessionStore: SessionServiceDelegate {
                 pending: [],
                 streamingState: .idle,
                 isTrustedFolder: false,
-                currentModel: "auto-gemini-2.5",
+                currentModel: AppConstants.defaultModel,
                 availableModels: [],
                 error: status.error
             )
@@ -287,7 +327,7 @@ final class SessionStore: SessionServiceDelegate {
                     pending: [],
                     streamingState: .idle,
                     isTrustedFolder: false,
-                    currentModel: "auto-gemini-2.5",
+                    currentModel: AppConstants.defaultModel,
                     availableModels: [],
                     error: info.error
                 )

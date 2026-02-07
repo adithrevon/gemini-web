@@ -5,144 +5,350 @@ struct ProjectSelectorView: View {
     let recentProjects: [String]
     let disabled: Bool
     let onSelect: (String) -> Void
-    
+    let onBrowse: () -> Void
+
     @State private var isExpanded = false
-    @State private var customPath = ""
-    @State private var showCustomInput = false
-    
+
+    init(
+        selectedProject: Binding<String>,
+        recentProjects: [String],
+        disabled: Bool,
+        onSelect: @escaping (String) -> Void,
+        onBrowse: @escaping () -> Void = {}
+    ) {
+        self._selectedProject = selectedProject
+        self.recentProjects = recentProjects
+        self.disabled = disabled
+        self.onSelect = onSelect
+        self.onBrowse = onBrowse
+    }
+
     private var displayName: String {
         if selectedProject.isEmpty {
             return "Select a project..."
         }
         return selectedProject.split(separator: "/").last.map(String.init) ?? selectedProject
     }
-    
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
             // Main selector button
             Button {
-                withAnimation(.spring(response: 0.3)) {
+                withAnimation(AppAnimation.spring) {
                     isExpanded.toggle()
                 }
             } label: {
                 HStack {
-                    Image(systemName: "folder")
-                        .foregroundStyle(.secondary)
-                    
+                    Image(systemName: "folder.fill")
+                        .foregroundStyle(selectedProject.isEmpty ? .secondary : Color.accentColor)
+
                     Text(displayName)
                         .foregroundStyle(selectedProject.isEmpty ? .secondary : .primary)
-                    
+
                     Spacer()
-                    
+
                     Image(systemName: "chevron.down")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.tertiary)
                         .rotationEffect(.degrees(isExpanded ? 180 : 0))
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(Color.secondary.opacity(0.15))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .padding(.horizontal, Spacing.lg)
+                .padding(.vertical, Spacing.md)
+                .background(Color.surfaceSecondary)
+                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
             }
             .buttonStyle(.plain)
             .disabled(disabled)
-            
+
             // Expanded menu
             if isExpanded {
                 VStack(alignment: .leading, spacing: 0) {
+                    // Browse button
+                    Button {
+                        onBrowse()
+                        withAnimation(AppAnimation.spring) {
+                            isExpanded = false
+                        }
+                    } label: {
+                        HStack(spacing: Spacing.sm) {
+                            Image(systemName: "folder.badge.gearshape")
+                                .font(.subheadline)
+                                .foregroundStyle(Color.accentColor)
+
+                            Text("Browse Folders...")
+                                .fontWeight(.medium)
+                                .foregroundStyle(Color.accentColor)
+
+                            Spacer()
+
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.vertical, Spacing.md)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
                     // Recent projects
                     if !recentProjects.isEmpty {
+                        Divider()
+                            .padding(.vertical, Spacing.xs)
+
                         Text("Recent Projects")
-                            .font(.caption)
+                            .font(.caption.weight(.medium))
                             .foregroundStyle(.secondary)
-                            .padding(.horizontal, 12)
-                            .padding(.top, 8)
-                            .padding(.bottom, 4)
-                        
+                            .padding(.horizontal, Spacing.md)
+                            .padding(.bottom, Spacing.xs)
+
                         ForEach(recentProjects, id: \.self) { project in
                             Button {
                                 selectProject(project)
                             } label: {
-                                HStack {
+                                HStack(spacing: Spacing.sm) {
                                     Image(systemName: "clock.arrow.circlepath")
                                         .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    
+                                        .foregroundStyle(.tertiary)
+
                                     Text(projectDisplayName(project))
                                         .lineLimit(1)
-                                    
+
                                     Spacer()
-                                    
+
                                     if project == selectedProject {
                                         Image(systemName: "checkmark")
-                                            .font(.caption)
-                                            .foregroundStyle(.blue)
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(Color.accentColor)
                                     }
                                 }
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 10)
+                                .padding(.horizontal, Spacing.md)
+                                .padding(.vertical, Spacing.sm)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
-                            
+
                             if project != recentProjects.last {
                                 Divider()
                                     .padding(.leading, 36)
                             }
                         }
                     }
-                    
-                    Divider()
-                        .padding(.vertical, 4)
-                    
-                    // Custom path input
-                    Button {
-                        showCustomInput = true
-                    } label: {
-                        HStack {
-                            Image(systemName: "folder.badge.plus")
-                                .font(.caption)
-                                .foregroundStyle(.blue)
-                            
-                            Text("Enter path manually...")
-                                .foregroundStyle(.blue)
-                            
-                            Spacer()
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                    }
-                    .buttonStyle(.plain)
                 }
-                .background(Color.secondary.opacity(0.15))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .background(Color.surfaceSecondary)
+                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .alert("Enter Project Path", isPresented: $showCustomInput) {
-            TextField("/path/to/project", text: $customPath)
-            Button("Cancel", role: .cancel) {
-                customPath = ""
-            }
-            Button("Open") {
-                if !customPath.isEmpty {
-                    selectProject(customPath)
-                    customPath = ""
-                }
-            }
-        }
     }
-    
+
     private func projectDisplayName(_ path: String) -> String {
         path.split(separator: "/").last.map(String.init) ?? path
     }
-    
+
     private func selectProject(_ project: String) {
         selectedProject = project
         onSelect(project)
-        withAnimation(.spring(response: 0.3)) {
+        withAnimation(AppAnimation.spring) {
             isExpanded = false
         }
+    }
+}
+
+// MARK: - Directory Browser Sheet
+
+struct DirectoryBrowserView: View {
+    @Binding var isPresented: Bool
+    let onSelect: (String) -> Void
+    let sessionStore: SessionStore
+
+    @State private var navigationPath: [DirectoryListing] = []
+    @State private var rootListing: DirectoryListing?
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var hasLoadedInitial = false
+
+    private var currentListing: DirectoryListing? {
+        navigationPath.last ?? rootListing
+    }
+
+    private var canGoBack: Bool {
+        !navigationPath.isEmpty
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if isLoading && currentListing == nil {
+                    ProgressView("Loading...")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let error = errorMessage, currentListing == nil {
+                    ContentUnavailableView {
+                        Label("Error", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(error)
+                    } actions: {
+                        Button("Retry") {
+                            Task { await loadDirectory(nil, isRoot: true) }
+                        }
+                    }
+                } else if let listing = currentListing {
+                    directoryList(listing)
+                } else {
+                    ProgressView("Loading...")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .navigationTitle(currentListing?.name ?? "Select Project")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    if canGoBack {
+                        Button {
+                            goBack()
+                        } label: {
+                            HStack(spacing: Spacing.xxs) {
+                                Image(systemName: "chevron.left")
+                                    .fontWeight(.semibold)
+                                if let parentName = getParentName() {
+                                    Text(parentName)
+                                        .lineLimit(1)
+                                }
+                            }
+                        }
+                    } else {
+                        Button("Cancel") {
+                            isPresented = false
+                        }
+                    }
+                }
+                if isLoading {
+                    ToolbarItem(placement: .primaryAction) {
+                        ProgressView()
+                    }
+                }
+            }
+        }
+        .onAppear {
+            if !hasLoadedInitial {
+                hasLoadedInitial = true
+                Task { await loadDirectory(nil, isRoot: true) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func directoryList(_ listing: DirectoryListing) -> some View {
+        List {
+            // Current directory info with select button
+            Section {
+                HStack {
+                    VStack(alignment: .leading, spacing: Spacing.xxs) {
+                        Text(listing.name)
+                            .font(.headline)
+                        Text(listing.path)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+
+                    Spacer()
+
+                    Button("Select") {
+                        onSelect(listing.path)
+                        isPresented = false
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+            }
+
+            // Subdirectories
+            Section {
+                ForEach(listing.directories) { dir in
+                    Button {
+                        navigateForward(to: dir.path)
+                    } label: {
+                        HStack(spacing: Spacing.sm) {
+                            Image(systemName: "folder.fill")
+                                .font(.body)
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 24)
+
+                            Text(dir.name)
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+
+                            Spacer()
+
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isLoading)
+                }
+
+                if listing.directories.isEmpty {
+                    Text("No subdirectories")
+                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                }
+            } header: {
+                Text("Folders")
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private func getParentName() -> String? {
+        if navigationPath.count >= 2 {
+            return navigationPath[navigationPath.count - 2].name
+        } else if navigationPath.count == 1 {
+            return rootListing?.name
+        }
+        return nil
+    }
+
+    private func goBack() {
+        guard !navigationPath.isEmpty else { return }
+        withAnimation {
+            _ = navigationPath.removeLast()
+        }
+    }
+
+    private func navigateForward(to path: String) {
+        Task {
+            await loadDirectory(path, isRoot: false)
+        }
+    }
+
+    private func loadDirectory(_ path: String?, isRoot: Bool) async {
+        isLoading = true
+        errorMessage = nil
+
+        let result = await sessionStore.browseDirectory(path)
+
+        if let listing = result {
+            withAnimation {
+                if isRoot {
+                    rootListing = listing
+                    navigationPath = []
+                } else {
+                    navigationPath.append(listing)
+                }
+            }
+            errorMessage = nil
+        } else {
+            if currentListing == nil {
+                errorMessage = "Failed to load directory"
+            }
+        }
+        isLoading = false
     }
 }
 
@@ -156,10 +362,11 @@ struct ProjectSelectorView: View {
                 "/Users/test/third-project"
             ],
             disabled: false,
-            onSelect: { _ in }
+            onSelect: { _ in },
+            onBrowse: {}
         )
         .padding()
-        
+
         Spacer()
     }
 }

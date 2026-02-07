@@ -323,6 +323,7 @@ enum OutgoingMessage: Encodable {
     case spawnInstance(projectPath: String)
     case terminateInstance(instanceId: String)
     case setActiveInstance(instanceId: String)
+    case interrupt(instanceId: String)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -361,6 +362,9 @@ enum OutgoingMessage: Encodable {
         case .setActiveInstance(let instanceId):
             try container.encode("setActiveInstance", forKey: .type)
             try container.encode(instanceId, forKey: .instanceId)
+        case .interrupt(let instanceId):
+            try container.encode("interrupt", forKey: .type)
+            try container.encode(instanceId, forKey: .instanceId)
         }
     }
 }
@@ -380,5 +384,30 @@ struct InstanceState: Identifiable {
     var isTrustedFolder: Bool
     var currentModel: String
     var availableModels: [ModelOption]
+    var error: String?
+}
+
+// MARK: - Directory Browsing
+
+struct DirectoryEntry: Codable, Identifiable {
+    let name: String
+    let path: String
+
+    var id: String { path }
+}
+
+struct DirectoryListing: Codable {
+    let path: String
+    let parent: String
+    let directories: [DirectoryEntry]
+    let isProject: Bool
+    let name: String
+}
+
+struct PathValidation: Codable {
+    let valid: Bool
+    let path: String
+    let name: String?
+    let isProject: Bool
     var error: String?
 }

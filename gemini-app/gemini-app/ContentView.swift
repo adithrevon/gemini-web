@@ -69,7 +69,9 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showSettings) {
-            SettingsView()
+            SettingsView(onServerChanged: {
+                store.switchServer()
+            })
         }
         .onAppear {
             store.connect()
@@ -97,8 +99,22 @@ struct ContentView: View {
                             NavigationLink(value: instance.id) {
                                 InstanceRowLabel(instance: instance, isActive: instance.id == store.activeInstanceId)
                             }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    store.terminateInstance(instance.id)
+                                } label: {
+                                    Label("Close", systemImage: "xmark.circle")
+                                }
+                            }
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    store.terminateInstance(instance.id)
+                                } label: {
+                                    Label("Close Chat", systemImage: "xmark.circle")
+                                }
+                            }
                         }
-                        
+
                         // New chat in this project
                         Button {
                             handleNewChatFromProject(projectPath)
@@ -140,9 +156,6 @@ struct ContentView: View {
                         initialProject: nil,
                         composerDisabled: newChatDisabled,
                         status: displayStatus,
-                        projectPath: displayProjectPath,
-                        availableModels: store.activeInstance?.availableModels ?? [],
-                        currentModel: store.activeInstance?.currentModel ?? "auto-gemini-2.5",
                         onProjectSelected: handleProjectSelected,
                         onSubmitMessage: { msg in
                             if let instanceId = pendingInstanceId {
@@ -152,10 +165,10 @@ struct ContentView: View {
                                 navigationPath.append(instanceId)
                             }
                         },
-                        onModelChange: { model in
-                            store.sendSetModel(model)
+                        onCancel: {
+                            handleCancelNewChat()
                         },
-                        onRetry: handleRetry
+                        sessionStore: store
                     )
                     .navigationTitle("New Chat")
                     #if os(iOS)
@@ -168,9 +181,6 @@ struct ContentView: View {
                         initialProject: pendingProjectPath,
                         composerDisabled: newChatDisabled,
                         status: displayStatus,
-                        projectPath: displayProjectPath,
-                        availableModels: store.activeInstance?.availableModels ?? [],
-                        currentModel: store.activeInstance?.currentModel ?? "auto-gemini-2.5",
                         onProjectSelected: handleProjectSelected,
                         onSubmitMessage: { msg in
                             if let instanceId = pendingInstanceId {
@@ -180,10 +190,10 @@ struct ContentView: View {
                                 navigationPath.append(instanceId)
                             }
                         },
-                        onModelChange: { model in
-                            store.sendSetModel(model)
+                        onCancel: {
+                            handleCancelNewChat()
                         },
-                        onRetry: handleRetry
+                        sessionStore: store
                     )
                     .navigationTitle("New Chat")
                     #if os(iOS)
@@ -220,6 +230,9 @@ struct ContentView: View {
                 },
                 onNewProject: {
                     handleNewProject()
+                },
+                onTerminate: { instanceId in
+                    store.terminateInstance(instanceId)
                 }
             )
             .toolbar {
@@ -248,15 +261,12 @@ struct ContentView: View {
                     initialProject: pendingProjectPath,
                     composerDisabled: newChatDisabled,
                     status: displayStatus,
-                    projectPath: displayProjectPath,
-                    availableModels: store.activeInstance?.availableModels ?? [],
-                    currentModel: store.activeInstance?.currentModel ?? "auto-gemini-2.5",
                     onProjectSelected: handleProjectSelected,
                     onSubmitMessage: handleStartChat,
-                    onModelChange: { model in
-                        store.sendSetModel(model)
+                    onCancel: {
+                        handleCancelNewChat()
                     },
-                    onRetry: handleRetry
+                    sessionStore: store
                 )
             } else if let instance = store.activeInstance {
                 chatDetailView(instance: instance)
@@ -271,7 +281,7 @@ struct ContentView: View {
     }
     
     // MARK: - Shared Views
-    
+
     @ViewBuilder
     private func chatDetailView(instance: InstanceState) -> some View {
         VStack(spacing: 0) {
@@ -291,25 +301,54 @@ struct ContentView: View {
                     .foregroundStyle(.secondary)
                 Spacer()
             }
-            
+
             ComposerView(
                 disabled: isDisabled,
-                status: instance.status,
-                projectPath: instance.projectPath,
-                currentModel: instance.currentModel,
-                availableModels: instance.availableModels,
+                streamingState: instance.streamingState,
                 onSubmit: { text in
                     store.sendSubmit(text)
                 },
-                onModelChange: { model in
-                    store.sendSetModel(model)
-                },
-                onRetry: handleRetry
+                onInterrupt: {
+                    store.sendInterrupt()
+                }
             )
         }
-        .navigationTitle(projectName(from: instance.projectPath))
         #if os(iOS)
-        .navigationBarTitleDisplayMode(.inline)
+        .ignoresSafeArea(.container, edges: .bottom)
+        .toolbarBackground(.hidden, for: .navigationBar)
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        navigationPath.removeLast()
+                    }
+                } label: {
+                    Image(systemName: "line.3.horizontal")
+                        .font(.body.weight(.medium))
+                }
+            }
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 2) {
+                    HStack(spacing: Spacing.xs) {
+                        StatusIndicatorView(status: instance.status)
+                        Text(projectName(from: instance.projectPath))
+                            .font(.subheadline.weight(.semibold))
+                    }
+
+                    ModelSelectorView(
+                        currentModel: instance.currentModel,
+                        availableModels: instance.availableModels,
+                        disabled: isDisabled,
+                        onSelect: { model in
+                            store.sendSetModel(model)
+                        }
+                    )
+                }
+            }
+        }
+        #else
+        .navigationTitle(projectName(from: instance.projectPath))
         #endif
     }
     
@@ -352,7 +391,7 @@ struct ContentView: View {
     private func handleRetry() {
         let instance = showNewChat ? store.instances[pendingInstanceId ?? ""] : store.activeInstance
         guard let instance = instance, let projectPath = Optional(instance.projectPath), instance.status == .error else { return }
-        
+
         store.terminateInstance(instance.id)
         Task {
             let newId = await store.spawnInstance(projectPath: projectPath)
@@ -360,6 +399,19 @@ struct ContentView: View {
                 pendingInstanceId = newId
             }
         }
+    }
+
+    private func handleCancelNewChat() {
+        // Terminate the pending instance if user navigates away without sending a message
+        if let instanceId = pendingInstanceId {
+            // Check if this instance has no messages (was never used)
+            if let instance = store.instances[instanceId], instance.history.isEmpty {
+                store.terminateInstance(instanceId)
+            }
+        }
+        pendingInstanceId = nil
+        pendingProjectPath = nil
+        showNewChat = false
     }
     
     private func projectName(from path: String) -> String {
@@ -372,28 +424,36 @@ struct ContentView: View {
 struct InstanceRowLabel: View {
     let instance: InstanceState
     let isActive: Bool
-    
+
+    private var statusColor: Color {
+        switch instance.status {
+        case .connected: return .statusConnected
+        case .connecting: return .statusConnecting
+        case .disconnected, .error: return .statusError
+        }
+    }
+
     var body: some View {
-        HStack {
+        HStack(spacing: Spacing.sm) {
             Circle()
                 .fill(statusColor)
                 .frame(width: 8, height: 8)
-            
-            VStack(alignment: .leading, spacing: 2) {
+
+            VStack(alignment: .leading, spacing: Spacing.xxs) {
                 Text(chatLabel)
                     .font(.subheadline)
                     .lineLimit(1)
-                
+
                 if let error = instance.error {
                     Text(error)
                         .font(.caption2)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Color.statusError)
                         .lineLimit(1)
                 }
             }
         }
     }
-    
+
     private var chatLabel: String {
         if instance.history.isEmpty {
             return "New Chat"
@@ -404,14 +464,6 @@ struct InstanceRowLabel: View {
             }
         }
         return "Chat"
-    }
-    
-    private var statusColor: Color {
-        switch instance.status {
-        case .connected: return .green
-        case .connecting: return .orange
-        case .disconnected, .error: return .red
-        }
     }
 }
 

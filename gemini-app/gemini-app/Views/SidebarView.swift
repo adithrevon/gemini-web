@@ -6,20 +6,23 @@ struct SidebarView: View {
     let onSelectInstance: (String) -> Void
     let onNewChat: (String) -> Void
     let onNewProject: () -> Void
-    
+    let onTerminate: (String) -> Void
+
     private var groupedInstances: [String: [InstanceState]] {
         Dictionary(grouping: instances) { $0.projectPath }
     }
-    
+
     var body: some View {
         List {
             // New project button
             Button {
                 onNewProject()
             } label: {
-                Label("New Project", systemImage: "plus.circle")
+                Label("New Project", systemImage: "plus.circle.fill")
+                    .foregroundStyle(Color.accentColor)
             }
-            
+            .buttonStyle(.plain)
+
             // Grouped instances by project
             ForEach(groupedInstances.keys.sorted(), id: \.self) { projectPath in
                 if let projectInstances = groupedInstances[projectPath] {
@@ -32,25 +35,41 @@ struct SidebarView: View {
                                     onSelectInstance(instance.id)
                                 }
                             )
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    onTerminate(instance.id)
+                                } label: {
+                                    Label("Close", systemImage: "xmark.circle")
+                                }
+                            }
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    onTerminate(instance.id)
+                                } label: {
+                                    Label("Close Chat", systemImage: "xmark.circle")
+                                }
+                            }
                         }
-                        
+
                         // New chat in this project
                         Button {
                             onNewChat(projectPath)
                         } label: {
                             Label("New Chat", systemImage: "plus")
-                                .font(.caption)
+                                .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
                         .buttonStyle(.plain)
                     } header: {
-                        HStack {
-                            Image(systemName: "folder")
+                        HStack(spacing: Spacing.xs) {
+                            Image(systemName: "folder.fill")
                                 .font(.caption)
+                                .foregroundStyle(Color.accentColor.opacity(0.8))
                             Text(projectName(from: projectPath))
-                                .font(.caption)
-                                .fontWeight(.medium)
+                                .font(.sectionHeader)
+                                .foregroundStyle(.secondary)
                         }
+                        .padding(.top, Spacing.xs)
                     }
                 }
             }
@@ -61,7 +80,7 @@ struct SidebarView: View {
         .navigationBarTitleDisplayMode(.inline)
         #endif
     }
-    
+
     private func projectName(from path: String) -> String {
         path.split(separator: "/").last.map(String.init) ?? path
     }
@@ -71,38 +90,50 @@ struct InstanceRowView: View {
     let instance: InstanceState
     let isActive: Bool
     let onSelect: () -> Void
-    
+
+    private var statusColor: Color {
+        switch instance.status {
+        case .connected: return .statusConnected
+        case .connecting: return .statusConnecting
+        case .disconnected, .error: return .statusError
+        }
+    }
+
     var body: some View {
         Button(action: onSelect) {
-            HStack {
+            HStack(spacing: Spacing.sm) {
                 // Status indicator
                 Circle()
                     .fill(statusColor)
                     .frame(width: 8, height: 8)
-                
+
                 // Chat label
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Spacing.xxs) {
                     Text(chatLabel)
                         .font(.subheadline)
                         .lineLimit(1)
-                    
+
                     if let error = instance.error {
                         Text(error)
                             .font(.caption2)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(Color.statusError)
                             .lineLimit(1)
                     }
                 }
-                
+
                 Spacer()
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, Spacing.xs)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .listRowBackground(isActive ? Color.accentColor.opacity(0.15) : nil)
+        .listRowBackground(
+            isActive
+                ? Color.accentColor.opacity(0.12)
+                : nil
+        )
     }
-    
+
     private var chatLabel: String {
         if instance.history.isEmpty {
             return "New Chat"
@@ -114,14 +145,6 @@ struct InstanceRowView: View {
             }
         }
         return "Chat"
-    }
-    
-    private var statusColor: Color {
-        switch instance.status {
-        case .connected: return .green
-        case .connecting: return .orange
-        case .disconnected, .error: return .red
-        }
     }
 }
 
@@ -137,7 +160,7 @@ struct InstanceRowView: View {
                     pending: [],
                     streamingState: .idle,
                     isTrustedFolder: false,
-                    currentModel: "auto-gemini-2.5",
+                    currentModel: AppConstants.defaultModel,
                     availableModels: [],
                     error: nil
                 ),
@@ -149,7 +172,7 @@ struct InstanceRowView: View {
                     pending: [],
                     streamingState: .idle,
                     isTrustedFolder: false,
-                    currentModel: "auto-gemini-2.5",
+                    currentModel: AppConstants.defaultModel,
                     availableModels: [],
                     error: nil
                 ),
@@ -161,7 +184,7 @@ struct InstanceRowView: View {
                     pending: [],
                     streamingState: .idle,
                     isTrustedFolder: false,
-                    currentModel: "auto-gemini-2.5",
+                    currentModel: AppConstants.defaultModel,
                     availableModels: [],
                     error: "Connection failed"
                 )
@@ -169,7 +192,8 @@ struct InstanceRowView: View {
             activeInstanceId: "1",
             onSelectInstance: { _ in },
             onNewChat: { _ in },
-            onNewProject: { }
+            onNewProject: { },
+            onTerminate: { _ in }
         )
     }
 }

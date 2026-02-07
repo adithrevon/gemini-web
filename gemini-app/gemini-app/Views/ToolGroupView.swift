@@ -4,9 +4,9 @@ struct ToolGroupView: View {
     let tools: [ToolCall]
     let isTrustedFolder: Bool
     let onConfirm: (String, ConfirmOutcome, String?) -> Void
-    
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
             ForEach(tools) { tool in
                 ToolCallView(
                     tool: tool,
@@ -15,9 +15,8 @@ struct ToolGroupView: View {
                 )
             }
         }
-        .padding(12)
-        .background(Color.secondary.opacity(0.15))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(Spacing.md)
+        .cardStyle()
     }
 }
 
@@ -25,100 +24,93 @@ struct ToolCallView: View {
     let tool: ToolCall
     let isTrustedFolder: Bool
     let onConfirm: (String, ConfirmOutcome, String?) -> Void
-    
+
     @State private var isExpanded = false
-    
+
     private var hasContent: Bool {
         tool.description != nil || tool.renderedResult != nil
     }
-    
+
     private var statusName: String {
         (tool.status ?? "pending").lowercased()
     }
-    
+
     private var statusColor: Color {
         switch statusName {
-        case "pending": return .secondary
-        case "executing": return .blue
-        case "success": return .green
-        case "error": return .red
-        case "confirming": return .orange
-        default: return .secondary
+        case "pending": return .toolPending
+        case "executing": return .toolExecuting
+        case "success": return .toolSuccess
+        case "error": return .toolError
+        case "confirming": return .toolConfirming
+        default: return .toolPending
         }
     }
-    
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
             // Header
-            HStack {
+            HStack(spacing: Spacing.sm) {
                 // Expand button
                 if hasContent {
-                    Button {
-                        withAnimation(.spring(response: 0.3)) {
-                            isExpanded.toggle()
-                        }
-                    } label: {
-                        Image(systemName: "chevron.right")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    }
-                    .buttonStyle(.plain)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .animation(AppAnimation.quick, value: isExpanded)
                 } else {
                     Spacer()
-                        .frame(width: 16)
+                        .frame(width: 12)
                 }
-                
+
+                // Tool icon
+                Image(systemName: toolIcon)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
                 // Tool name
                 Text(tool.name)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-                
+                    .font(.subheadline.weight(.medium))
+
                 Spacer()
-                
+
                 // Status badge
                 Text(tool.status ?? "pending")
-                    .font(.caption2)
-                    .fontWeight(.medium)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(statusColor)
-                    .clipShape(Capsule())
+                    .statusBadgeStyle(color: statusColor)
             }
             .contentShape(Rectangle())
             .onTapGesture {
                 if hasContent {
-                    withAnimation(.spring(response: 0.3)) {
+                    withAnimation(AppAnimation.spring) {
                         isExpanded.toggle()
                     }
                 }
             }
-            
+
             // Expanded content
             if isExpanded && hasContent {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: Spacing.sm) {
                     if let description = tool.description {
                         Text(description)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    
+
                     if let resultText = tool.renderedResult {
                         ScrollView(.horizontal, showsIndicators: false) {
                             Text(resultText)
-                                .font(.system(.caption, design: .monospaced))
+                                .font(.codeBlock)
                                 .foregroundStyle(.primary)
                         }
                         .frame(maxHeight: 200)
-                        .padding(8)
-                        .background(Color.primary.opacity(0.05))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .padding(Spacing.sm)
+                        .background(Color.surfaceTertiary)
+                        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
                     }
                 }
-                .padding(.leading, 24)
+                .padding(.leading, Spacing.xl)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
-            
+
             // Confirmation actions
             if statusName == "confirming", let details = tool.confirmationDetails {
                 ConfirmationView(
@@ -127,8 +119,19 @@ struct ToolCallView: View {
                 ) { outcome in
                     onConfirm(tool.callId, outcome, tool.correlationId)
                 }
-                .padding(.leading, 24)
+                .padding(.leading, Spacing.xl)
             }
+        }
+    }
+
+    private var toolIcon: String {
+        switch tool.name.lowercased() {
+        case let n where n.contains("read"): return "doc.text"
+        case let n where n.contains("write"), let n where n.contains("edit"): return "pencil"
+        case let n where n.contains("bash"), let n where n.contains("command"): return "terminal"
+        case let n where n.contains("search"), let n where n.contains("grep"): return "magnifyingglass"
+        case let n where n.contains("list"), let n where n.contains("glob"): return "folder"
+        default: return "gearshape"
         }
     }
 }
@@ -171,7 +174,7 @@ struct ToolCallView: View {
             onConfirm: { _, _, _ in }
         )
         .padding()
-        
+
         Spacer()
     }
 }

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Bash(xcodebuild:*)",
+      "Bash(xcrun devicectl device install app:*)"
+    ]
+  }
+}

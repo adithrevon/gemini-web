@@ -2,7 +2,6 @@ import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { readFile } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { WebSocketServer, WebSocket } from 'ws';
 import { spawn } from 'node:child_process';
@@ -11,9 +10,6 @@ import crypto from 'node:crypto';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..', '..');
-// Serve from Vite build output (dist) or fallback to public for dev
-const distDir = path.join(__dirname, 'dist');
-const publicDir = existsSync(distDir) ? distDir : path.join(__dirname, 'public');
 
 const port = Number(process.env.GEMINI_WEB_PORT ?? '7337');
 const wsPath = process.env.GEMINI_WEB_WS_PATH ?? '/ws';
@@ -28,15 +24,6 @@ const log = (...args) => {
     console.log('[web]', ...args);
   }
 };
-
-const contentTypeByExt = new Map([
-  ['.html', 'text/html; charset=utf-8'],
-  ['.js', 'text/javascript; charset=utf-8'],
-  ['.css', 'text/css; charset=utf-8'],
-  ['.svg', 'image/svg+xml'],
-  ['.png', 'image/png'],
-  ['.ico', 'image/x-icon'],
-]);
 
 const readJsonBody = async (req) => {
   const chunks = [];
@@ -448,6 +435,98 @@ const server = http.createServer(async (req, res) => {
       `http://${req.headers.host ?? 'localhost'}`,
     );
 
+    // Health check endpoint for server validation
+    if (url.pathname === '/health' && req.method === 'GET') {
+      sendJson(res, 200, { status: 'ok', timestamp: Date.now() });
+      return;
+    }
+
+    // Browse directories endpoint
+    if (url.pathname === '/api/browse' && req.method === 'GET') {
+      const dirPath = url.searchParams.get('path') || os.homedir();
+      try {
+        const resolvedPath = dirPath.startsWith('~')
+          ? path.join(os.homedir(), dirPath.slice(1))
+          : path.resolve(dirPath);
+
+        const { readdirSync, statSync } = await import('node:fs');
+        const entries = readdirSync(resolvedPath, { withFileTypes: true });
+
+        const directories = entries
+          .filter((entry) => {
+            // Filter out hidden files and only include directories
+            if (entry.name.startsWith('.')) return false;
+            try {
+              return entry.isDirectory();
+            } catch {
+              return false;
+            }
+          })
+          .map((entry) => ({
+            name: entry.name,
+            path: path.join(resolvedPath, entry.name),
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name));
+
+        // Check if this directory is a project (has common project indicators)
+        const isProject = entries.some((e) =>
+          ['package.json', '.git', 'Cargo.toml', 'go.mod', 'pyproject.toml', 'Gemfile', '.xcodeproj', '.xcworkspace'].some(
+            (indicator) => e.name === indicator || e.name.endsWith('.xcodeproj') || e.name.endsWith('.xcworkspace')
+          )
+        );
+
+        sendJson(res, 200, {
+          path: resolvedPath,
+          parent: path.dirname(resolvedPath),
+          directories,
+          isProject,
+          name: path.basename(resolvedPath),
+        });
+      } catch (err) {
+        sendJson(res, 400, { error: err.message || 'Failed to read directory' });
+      }
+      return;
+    }
+
+    // Validate path endpoint
+    if (url.pathname === '/api/validate-path' && req.method === 'GET') {
+      const dirPath = url.searchParams.get('path');
+      if (!dirPath) {
+        sendJson(res, 400, { error: 'Missing path parameter' });
+        return;
+      }
+      try {
+        const resolvedPath = dirPath.startsWith('~')
+          ? path.join(os.homedir(), dirPath.slice(1))
+          : path.resolve(dirPath);
+
+        const { statSync, readdirSync } = await import('node:fs');
+        const stat = statSync(resolvedPath);
+
+        if (!stat.isDirectory()) {
+          sendJson(res, 400, { error: 'Path is not a directory', valid: false });
+          return;
+        }
+
+        // Check if it's a project directory
+        const entries = readdirSync(resolvedPath);
+        const isProject = entries.some((e) =>
+          ['package.json', '.git', 'Cargo.toml', 'go.mod', 'pyproject.toml', 'Gemfile'].includes(e) ||
+          e.endsWith('.xcodeproj') || e.endsWith('.xcworkspace')
+        );
+
+        sendJson(res, 200, {
+          valid: true,
+          path: resolvedPath,
+          name: path.basename(resolvedPath),
+          isProject,
+        });
+      } catch (err) {
+        sendJson(res, 400, { error: 'Directory does not exist', valid: false });
+      }
+      return;
+    }
+
     if (url.pathname === '/api/session' && req.method === 'POST') {
       const body = await readJsonBody(req);
       const requestedId =
@@ -549,6 +628,45 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
+        if (body.type === 'interrupt') {
+          const instanceId =
+            typeof body.instanceId === 'string' ? body.instanceId : '';
+          if (!instanceId) {
+            sendJson(res, 400, { error: 'Missing instanceId' });
+            return;
+          }
+          const inst = instances.get(instanceId);
+          if (!inst || inst.sessionId !== sessionId) {
+            sendJson(res, 403, { error: 'Instance not found in session' });
+            return;
+          }
+          if (!inst.process) {
+            sendJson(res, 409, { error: 'CLI process not running' });
+            return;
+          }
+
+          log('interrupt instance', instanceId);
+
+          // Send Ctrl+C (SIGINT) to interrupt the current operation
+          try {
+            if (typeof inst.process.write === 'function') {
+              // node-pty: send Ctrl+C character
+              inst.process.write('\x03');
+            } else if (inst.process.stdin) {
+              // spawn: write to stdin
+              inst.process.stdin.write('\x03');
+            } else if (typeof inst.process.kill === 'function') {
+              // Fallback: send SIGINT signal
+              inst.process.kill('SIGINT');
+            }
+            sendJson(res, 200, { ok: true });
+          } catch (err) {
+            log('interrupt error', err);
+            sendJson(res, 500, { error: 'Failed to interrupt' });
+          }
+          return;
+        }
+
         if (
           body.type === 'submit' ||
           body.type === 'confirm' ||
@@ -591,25 +709,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const pathname = url.pathname === '/' ? '/index.html' : url.pathname;
-    const filePath = path.normalize(path.join(publicDir, pathname));
-
-    if (!filePath.startsWith(publicDir)) {
-      res.writeHead(403);
-      res.end('Forbidden');
-      return;
-    }
-
-    const data = await readFile(filePath);
-    const ext = path.extname(filePath);
-    res.writeHead(200, {
-      'Content-Type': contentTypeByExt.get(ext) ?? 'application/octet-stream',
-      'Cache-Control': 'no-cache',
-    });
-    res.end(data);
-  } catch (error) {
+    // No static file serving - iOS app is the only frontend
     res.writeHead(404);
     res.end('Not found');
+  } catch (error) {
+    res.writeHead(500);
+    res.end('Internal server error');
   }
 });
 
@@ -748,6 +853,6 @@ wss.on('error', () => {
 });
 
 server.listen(port, () => {
-  console.log(`[web] Listening on http://localhost:${port}`);
-  console.log(`[web] Multi-instance mode enabled. Use web UI to spawn instances.`);
+  console.log(`[web] API server listening on http://localhost:${port}`);
+  console.log(`[web] Connect iOS app to this server to spawn CLI instances.`);
 });

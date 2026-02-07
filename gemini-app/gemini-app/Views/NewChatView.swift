@@ -5,124 +5,67 @@ struct NewChatView: View {
     let initialProject: String?
     let composerDisabled: Bool
     let status: InstanceStatus?
-    let projectPath: String?
-    let availableModels: [ModelOption]
-    let currentModel: String
     let onProjectSelected: (String) -> Void
     let onSubmitMessage: (String) -> Void
-    let onModelChange: (String) -> Void
-    let onRetry: (() -> Void)?
-    
+    let onCancel: (() -> Void)?
+    let sessionStore: SessionStore
+
     @State private var selectedProject: String = ""
-    @State private var message: String = ""
-    @FocusState private var isFocused: Bool
-    
-    private var projectName: String? {
-        projectPath?.split(separator: "/").last.map(String.init)
+    @State private var didSendMessage = false
+    @State private var showBrowser = false
+
+    private var isConnecting: Bool {
+        status == .connecting
     }
-    
-    private var canSubmit: Bool {
-        !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
-        !selectedProject.isEmpty &&
-        !composerDisabled
-    }
-    
+
     var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
-            
-            // Header
-            VStack(spacing: 16) {
-                Text("Let's build")
-                    .font(.largeTitle)
-                    .fontWeight(.bold)
-                
+        VStack(spacing: 0) {
+            // Hero section - centered in available space
+            VStack(spacing: Spacing.lg) {
+                Spacer()
+
+                // Animated icon
+                ZStack {
+                    if isConnecting {
+                        ConnectionAnimationView()
+                    } else {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 48))
+                            .foregroundStyle(Color.accentColor.gradient)
+                    }
+                }
+                .frame(height: 80)
+
+                Text(isConnecting ? "Connecting..." : "Let's build")
+                    .font(.heroTitle)
+                    .animation(.easeInOut, value: isConnecting)
+
                 ProjectSelectorView(
                     selectedProject: $selectedProject,
                     recentProjects: recentProjects,
-                    disabled: false,
-                    onSelect: onProjectSelected
+                    disabled: isConnecting,
+                    onSelect: onProjectSelected,
+                    onBrowse: {
+                        showBrowser = true
+                    }
                 )
                 .frame(maxWidth: 400)
+
+                Spacer()
             }
-            
-            // Composer card
-            VStack(spacing: 0) {
-                // Text input
-                TextField(
-                    selectedProject.isEmpty ? "Select a project first..." : "Type message here...",
-                    text: $message,
-                    axis: .vertical
-                )
-                .textFieldStyle(.plain)
-                .lineLimit(1...8)
-                .focused($isFocused)
-                .disabled(composerDisabled || selectedProject.isEmpty)
-                .onSubmit {
-                    if canSubmit {
-                        submitMessage()
-                    }
-                }
-                .padding(16)
-                
-                Divider()
-                
-                // Toolbar
-                HStack {
-                    // Status indicator
-                    if let status = status {
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(statusColor(status))
-                                .frame(width: 8, height: 8)
-                            
-                            if let name = projectName {
-                                Text(name)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            
-                            if status == .error, let onRetry = onRetry {
-                                Button("Retry", action: onRetry)
-                                    .font(.caption)
-                                    .foregroundStyle(.blue)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 8)
-                        .background(Color.secondary.opacity(0.15))
-                        .clipShape(Capsule())
-                    }
-                    
-                    Spacer()
-                    
-                    // Model selector
-                    ModelSelectorView(
-                        currentModel: currentModel,
-                        availableModels: availableModels,
-                        disabled: composerDisabled,
-                        onSelect: onModelChange
-                    )
-                    
-                    // Send button
-                    Button(action: submitMessage) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.title2)
-                            .foregroundStyle(canSubmit ? .blue : .gray)
-                    }
-                    .disabled(!canSubmit)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            }
-            .background(Color.secondary.opacity(0.15))
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .frame(maxWidth: 600)
-            
-            Spacer()
-            Spacer()
+            .padding(.horizontal, Spacing.lg)
+
+            // ComposerView at bottom - same as existing conversation
+            ComposerView(
+                disabled: composerDisabled || selectedProject.isEmpty,
+                streamingState: .idle,
+                onSubmit: { text in
+                    didSendMessage = true
+                    onSubmitMessage(text)
+                },
+                onInterrupt: nil
+            )
         }
-        .padding()
         .onAppear {
             if let initial = initialProject {
                 selectedProject = initial
@@ -133,25 +76,72 @@ struct NewChatView: View {
                 selectedProject = newValue
             }
         }
+        .onDisappear {
+            // Terminate instance if navigating away without sending a message
+            if !didSendMessage {
+                onCancel?()
+            }
+        }
+        .sheet(isPresented: $showBrowser) {
+            DirectoryBrowserView(
+                isPresented: $showBrowser,
+                onSelect: { path in
+                    selectedProject = path
+                    onProjectSelected(path)
+                },
+                sessionStore: sessionStore
+            )
+        }
     }
-    
-    private func submitMessage() {
-        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !selectedProject.isEmpty else { return }
-        onSubmitMessage(trimmed)
-        message = ""
-    }
-    
-    private func statusColor(_ status: InstanceStatus) -> Color {
-        switch status {
-        case .connected: return .green
-        case .connecting: return .orange
-        case .disconnected, .error: return .red
+}
+
+// MARK: - Connection Animation
+
+struct ConnectionAnimationView: View {
+    @State private var isAnimating = false
+    @State private var rotation: Double = 0
+
+    var body: some View {
+        ZStack {
+            // Outer pulsing ring
+            Circle()
+                .stroke(Color.accentColor.opacity(0.3), lineWidth: 2)
+                .frame(width: 70, height: 70)
+                .scaleEffect(isAnimating ? 1.2 : 0.9)
+                .opacity(isAnimating ? 0 : 0.8)
+
+            // Middle rotating ring
+            Circle()
+                .trim(from: 0, to: 0.7)
+                .stroke(
+                    AngularGradient(
+                        colors: [Color.accentColor, Color.accentColor.opacity(0.3)],
+                        center: .center
+                    ),
+                    style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                )
+                .frame(width: 55, height: 55)
+                .rotationEffect(.degrees(rotation))
+
+            // Inner sparkle icon
+            Image(systemName: "sparkles")
+                .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+                .scaleEffect(isAnimating ? 1.1 : 0.95)
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
+                isAnimating = true
+            }
+            withAnimation(.linear(duration: 1.5).repeatForever(autoreverses: false)) {
+                rotation = 360
+            }
         }
     }
 }
 
 #Preview {
+    @Previewable @State var store = SessionStore()
     NewChatView(
         recentProjects: [
             "/Users/test/my-project",
@@ -159,13 +149,10 @@ struct NewChatView: View {
         ],
         initialProject: nil,
         composerDisabled: false,
-        status: nil,
-        projectPath: nil,
-        availableModels: [],
-        currentModel: "auto-gemini-2.5",
+        status: .connecting,
         onProjectSelected: { _ in },
         onSubmitMessage: { _ in },
-        onModelChange: { _ in },
-        onRetry: nil
+        onCancel: nil,
+        sessionStore: store
     )
 }
