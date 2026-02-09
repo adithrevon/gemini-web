@@ -29,6 +29,16 @@
     <string>Gemini needs microphone access for voice dictation</string>
     <key>NSSpeechRecognitionUsageDescription</key>
     <string>Gemini uses speech recognition for voice input</string>
+    <key>NSUserNotificationUsageDescription</key>
+    <string>Gemini sends notifications when conversations complete in the background</string>
+    <key>BGTaskSchedulerPermittedIdentifiers</key>
+    <array>
+        <string>com.prem.gemini-app.sse-monitor</string>
+    </array>
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>fetch</string>
+    </array>
     <key>UILaunchScreen</key>
     <dict/>
     <key>UISupportedInterfaceOrientations</key>

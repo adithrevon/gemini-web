@@ -102,10 +102,17 @@ struct InstanceRowView: View {
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: Spacing.sm) {
-                // Status indicator
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 8, height: 8)
+                // Provider icon + status indicator
+                ZStack(alignment: .bottomTrailing) {
+                    Image(systemName: instance.provider.icon)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16, height: 16)
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 6, height: 6)
+                        .offset(x: 2, y: 2)
+                }
 
                 // Chat label
                 VStack(alignment: .leading, spacing: Spacing.xxs) {

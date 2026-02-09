@@ -1,29 +1,36 @@
 import SwiftUI
+import os.log
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "gemini-app", category: "ContentView")
 
 struct ContentView: View {
     @State private var store = SessionStore()
+    @State private var inAppNotificationManager = InAppNotificationManager()
     @State private var showNewChat = false
     @State private var showSettings = false
     @State private var pendingProjectPath: String?
     @State private var pendingInstanceId: String?
+    @State private var pendingProvider: Provider = .gemini
+    @State private var pendingYolo: Bool = false
+    @State private var pendingModel: String?
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var navigationPath = NavigationPath()
-    
+
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    
+
     private var hasActiveChat: Bool {
         store.activeInstance != nil && !showNewChat
     }
-    
+
     private var hasMessages: Bool {
         guard let instance = store.activeInstance else { return false }
         return !instance.history.isEmpty || !instance.pending.isEmpty
     }
-    
+
     private var isDisabled: Bool {
         !store.connected || store.activeInstance == nil || store.activeInstance?.status != .connected
     }
-    
+
     private var displayStatus: InstanceStatus? {
         if showNewChat {
             if pendingProjectPath != nil {
@@ -36,36 +43,63 @@ struct ContentView: View {
         }
         return store.activeInstance?.status
     }
-    
+
     private var displayProjectPath: String? {
         if showNewChat {
             return pendingProjectPath ?? store.instances[pendingInstanceId ?? ""]?.projectPath
         }
         return store.activeInstance?.projectPath
     }
-    
+
     private var newChatDisabled: Bool {
         guard showNewChat else { return isDisabled }
         guard pendingProjectPath != nil else { return true }
         guard let id = pendingInstanceId, let inst = store.instances[id] else { return true }
         return inst.status != .connected
     }
-    
+
     private var recentProjects: [String] {
         if let pending = pendingProjectPath {
             return [pending] + store.recentProjects.filter { $0 != pending }
         }
         return store.recentProjects
     }
-    
+
     var body: some View {
-        Group {
-            if horizontalSizeClass == .compact {
-                // iPhone: Use NavigationStack with proper navigation
-                iPhoneLayout
-            } else {
-                // iPad/Mac: Use NavigationSplitView
-                iPadMacLayout
+        ZStack {
+            // Main content
+            Group {
+                if horizontalSizeClass == .compact {
+                    iPhoneLayout
+                } else {
+                    iPadMacLayout
+                }
+            }
+
+            // Notification badge (top right)
+            NotificationBadge(
+                manager: inAppNotificationManager,
+                onNotificationTap: { instanceId in
+                    logger.info("Notification tapped in ContentView: \(instanceId)")
+                    // Directly update active instance
+                    store.activeInstanceId = instanceId
+                    showNewChat = false
+
+                    // Update navigation path for iPhone (compact layout)
+                    navigationPath = NavigationPath()
+                    navigationPath.append(instanceId)
+
+                    // Also notify server
+                    store.setActiveInstance(instanceId)
+                    logger.info("Active instance set to: \(instanceId), showNewChat: \(showNewChat)")
+                }
+            )
+            .onChange(of: store.activeInstanceId) { _, newInstanceId in
+                // Clear notifications when navigating to that instance
+                if let newInstanceId = newInstanceId {
+                    inAppNotificationManager.notifications.removeAll { $0.instanceId == newInstanceId }
+                    logger.info("Cleared notifications for instance: \(newInstanceId)")
+                }
             }
         }
         .sheet(isPresented: $showSettings) {
@@ -75,70 +109,77 @@ struct ContentView: View {
         }
         .onAppear {
             store.connect()
+            // Pass the notification manager to the store
+            store.setInAppNotificationManager(inAppNotificationManager)
+        }
+        .onOpenURL { url in
+            handleNotificationDeepLink(url)
         }
     }
-    
+
+    // MARK: - Notification Deep Linking
+
+    private func handleNotificationDeepLink(_ url: URL) {
+        // Handle deep links from notifications
+        // Format: gemini-app://instance?id=<instanceId>&action=<action>
+        guard url.scheme == "gemini-app" else { return }
+
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: true)
+        guard let queryItems = components?.queryItems else { return }
+
+        var instanceId: String?
+        var action: String?
+
+        for item in queryItems {
+            if item.name == "id" {
+                instanceId = item.value
+            } else if item.name == "action" {
+                action = item.value
+            }
+        }
+
+        guard let instanceId = instanceId else { return }
+
+        logger.info("Notification deep link: instanceId=\(instanceId), action=\(action ?? "none")")
+
+        // Navigate to the instance
+        store.setActiveInstance(instanceId)
+        showNewChat = false
+
+        // Handle specific actions
+        if action == "confirmation_needed" {
+            // The confirmation dialog will appear automatically when we navigate
+            // since the instance will be in waiting_for_confirmation state
+        }
+    }
+
     // MARK: - iPhone Layout
-    
+
     @ViewBuilder
     private var iPhoneLayout: some View {
         NavigationStack(path: $navigationPath) {
-            // Main list view
-            List {
-                // New project button - navigates to new chat
-                NavigationLink(value: "newProject") {
-                    Label("New Project", systemImage: "plus.circle")
+            SidebarView(
+                instances: store.sortedInstances,
+                activeInstanceId: store.activeInstanceId,
+                onSelectInstance: { id in
+                    store.setActiveInstance(id)
+                    showNewChat = false
+                    navigationPath.append(id)
+                },
+                onNewChat: { projectPath in
+                    handleNewChatFromProject(projectPath)
+                    navigationPath.append("newChat")
+                },
+                onNewProject: {
+                    handleNewProject()
+                    navigationPath.append("newChat")
+                },
+                onTerminate: { instanceId in
+                    store.terminateInstance(instanceId)
                 }
-                
-                // Grouped instances by project
-                ForEach(store.sortedInstances.map(\.projectPath).uniqued(), id: \.self) { projectPath in
-                    let projectInstances = store.sortedInstances.filter { $0.projectPath == projectPath }
-                    
-                    Section {
-                        ForEach(projectInstances) { instance in
-                            NavigationLink(value: instance.id) {
-                                InstanceRowLabel(instance: instance, isActive: instance.id == store.activeInstanceId)
-                            }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    store.terminateInstance(instance.id)
-                                } label: {
-                                    Label("Close", systemImage: "xmark.circle")
-                                }
-                            }
-                            .contextMenu {
-                                Button(role: .destructive) {
-                                    store.terminateInstance(instance.id)
-                                } label: {
-                                    Label("Close Chat", systemImage: "xmark.circle")
-                                }
-                            }
-                        }
-
-                        // New chat in this project
-                        Button {
-                            handleNewChatFromProject(projectPath)
-                            navigationPath.append("detail")
-                        } label: {
-                            Label("New Chat", systemImage: "plus")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    } header: {
-                        HStack {
-                            Image(systemName: "folder")
-                                .font(.caption)
-                            Text(projectName(from: projectPath))
-                                .font(.caption)
-                                .fontWeight(.medium)
-                        }
-                    }
-                }
-            }
-            .listStyle(.sidebar)
-            .navigationTitle("Chats")
-            #if os(iOS)
+            )
             .toolbar {
+                #if os(iOS)
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         showSettings = true
@@ -146,46 +187,22 @@ struct ContentView: View {
                         Image(systemName: "gear")
                     }
                 }
+                #endif
             }
-            #endif
             .navigationDestination(for: String.self) { value in
-                if value == "newProject" {
-                    // Show NewChatView for new project
-                    NewChatView(
-                        recentProjects: recentProjects,
-                        initialProject: nil,
-                        composerDisabled: newChatDisabled,
-                        status: displayStatus,
-                        onProjectSelected: handleProjectSelected,
-                        onSubmitMessage: { msg in
-                            if let instanceId = pendingInstanceId {
-                                handleStartChat(msg)
-                                // Replace NewChatView with chat detail
-                                navigationPath.removeLast()
-                                navigationPath.append(instanceId)
-                            }
-                        },
-                        onCancel: {
-                            handleCancelNewChat()
-                        },
-                        sessionStore: store
-                    )
-                    .navigationTitle("New Chat")
-                    #if os(iOS)
-                    .navigationBarTitleDisplayMode(.inline)
-                    #endif
-                } else if value == "detail" {
-                    // Show new chat view with pending project
+                if value == "newChat" {
                     NewChatView(
                         recentProjects: recentProjects,
                         initialProject: pendingProjectPath,
+                        initialProvider: pendingProvider,
                         composerDisabled: newChatDisabled,
                         status: displayStatus,
-                        onProjectSelected: handleProjectSelected,
+                        onProjectSelected: { path, provider, yolo, model in
+                            handleProjectSelected(path, provider: provider, yolo: yolo, model: model)
+                        },
                         onSubmitMessage: { msg in
                             if let instanceId = pendingInstanceId {
                                 handleStartChat(msg)
-                                // Replace NewChatView with chat detail
                                 navigationPath.removeLast()
                                 navigationPath.append(instanceId)
                             }
@@ -199,6 +216,18 @@ struct ContentView: View {
                     #if os(iOS)
                     .navigationBarTitleDisplayMode(.inline)
                     #endif
+                    .gesture(
+                        DragGesture(minimumDistance: 50, coordinateSpace: .local)
+                            .onEnded { value in
+                                if value.translation.width > 100 && abs(value.translation.height) < 100 {
+                                    if !navigationPath.isEmpty {
+                                        withAnimation(.easeInOut(duration: 0.25)) {
+                                            navigationPath.removeLast()
+                                        }
+                                    }
+                                }
+                            }
+                    )
                 } else {
                     // It's an instance ID
                     if let instance = store.instances[value] {
@@ -207,14 +236,26 @@ struct ContentView: View {
                                 store.setActiveInstance(value)
                                 showNewChat = false
                             }
+                            .gesture(
+                                DragGesture(minimumDistance: 50, coordinateSpace: .local)
+                                    .onEnded { value in
+                                        if value.translation.width > 100 && abs(value.translation.height) < 100 {
+                                            if !navigationPath.isEmpty {
+                                                withAnimation(.easeInOut(duration: 0.25)) {
+                                                    navigationPath.removeLast()
+                                                }
+                                            }
+                                        }
+                                    }
+                            )
                     }
                 }
             }
         }
     }
-    
+
     // MARK: - iPad/Mac Layout
-    
+
     @ViewBuilder
     private var iPadMacLayout: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -259,9 +300,12 @@ struct ContentView: View {
                 NewChatView(
                     recentProjects: recentProjects,
                     initialProject: pendingProjectPath,
+                    initialProvider: pendingProvider,
                     composerDisabled: newChatDisabled,
                     status: displayStatus,
-                    onProjectSelected: handleProjectSelected,
+                    onProjectSelected: { path, provider, yolo, model in
+                        handleProjectSelected(path, provider: provider, yolo: yolo, model: model)
+                    },
                     onSubmitMessage: handleStartChat,
                     onCancel: {
                         handleCancelNewChat()
@@ -279,7 +323,7 @@ struct ContentView: View {
             }
         }
     }
-    
+
     // MARK: - Shared Views
 
     @ViewBuilder
@@ -316,21 +360,28 @@ struct ContentView: View {
         #if os(iOS)
         .ignoresSafeArea(.container, edges: .bottom)
         .toolbarBackground(.hidden, for: .navigationBar)
-        .navigationBarBackButtonHidden(true)
+        .navigationBarBackButtonHidden(horizontalSizeClass == .compact)
         .toolbar {
-            ToolbarItem(placement: .navigationBarLeading) {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        navigationPath.removeLast()
+            if horizontalSizeClass == .compact {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        if !navigationPath.isEmpty {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                navigationPath.removeLast()
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.body.weight(.medium))
                     }
-                } label: {
-                    Image(systemName: "line.3.horizontal")
-                        .font(.body.weight(.medium))
                 }
             }
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 2) {
                     HStack(spacing: Spacing.xs) {
+                        Image(systemName: instance.provider.icon)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         StatusIndicatorView(status: instance.status)
                         Text(projectName(from: instance.projectPath))
                             .font(.subheadline.weight(.semibold))
@@ -351,43 +402,66 @@ struct ContentView: View {
         .navigationTitle(projectName(from: instance.projectPath))
         #endif
     }
-    
+
     // MARK: - Handlers
-    
-    private func handleProjectSelected(_ projectPath: String) {
+
+    private func handleProjectSelected(_ projectPath: String, provider: Provider = .gemini, yolo: Bool = false, model: String? = nil) {
+        // If there's already a pending instance with no messages, terminate it first
+        if let oldId = pendingInstanceId,
+           let oldInst = store.instances[oldId],
+           oldInst.history.isEmpty {
+            store.terminateInstance(oldId)
+            pendingInstanceId = nil
+        }
+
+        showNewChat = true
         pendingProjectPath = projectPath
+        pendingProvider = provider
+        pendingYolo = yolo
+        pendingModel = model
         Task {
-            let instanceId = await store.spawnInstance(projectPath: projectPath)
-            if pendingProjectPath == projectPath {
+            let instanceId = await store.spawnInstance(projectPath: projectPath, provider: provider, yolo: yolo)
+            if pendingProjectPath == projectPath && pendingProvider == provider {
                 pendingInstanceId = instanceId
             }
         }
     }
-    
+
     private func handleStartChat(_ message: String) {
         guard let instance = showNewChat ? store.instances[pendingInstanceId ?? ""] : store.activeInstance else { return }
         guard instance.status == .connected else { return }
-        
+
         if showNewChat, let id = pendingInstanceId {
             store.setActiveInstance(id)
         }
-        
+
+        // Send setModel before first message if a non-default model was selected
+        if let model = pendingModel, model != pendingProvider.defaultModel {
+            store.sendSetModel(model)
+        }
+        pendingModel = nil
+
         store.sendSubmit(message)
         showNewChat = false
     }
-    
+
     private func handleNewChatFromProject(_ projectPath: String) {
+        // Show NewChatView with this project pre-selected, but don't auto-spawn.
+        // Let the user pick a provider first. NewChatView will trigger onProjectSelected
+        // once the user confirms project + provider.
         pendingInstanceId = nil
+        pendingProjectPath = projectPath
+        pendingProvider = .gemini
         showNewChat = true
-        handleProjectSelected(projectPath)
     }
-    
+
     private func handleNewProject() {
         pendingProjectPath = nil
         pendingInstanceId = nil
+        pendingProvider = .gemini
         showNewChat = true
     }
-    
+
     private func handleRetry() {
         let instance = showNewChat ? store.instances[pendingInstanceId ?? ""] : store.activeInstance
         guard let instance = instance, let projectPath = Optional(instance.projectPath), instance.status == .error else { return }
@@ -404,7 +478,6 @@ struct ContentView: View {
     private func handleCancelNewChat() {
         // Terminate the pending instance if user navigates away without sending a message
         if let instanceId = pendingInstanceId {
-            // Check if this instance has no messages (was never used)
             if let instance = store.instances[instanceId], instance.history.isEmpty {
                 store.terminateInstance(instanceId)
             }
@@ -413,7 +486,7 @@ struct ContentView: View {
         pendingProjectPath = nil
         showNewChat = false
     }
-    
+
     private func projectName(from path: String) -> String {
         path.split(separator: "/").last.map(String.init) ?? path
     }

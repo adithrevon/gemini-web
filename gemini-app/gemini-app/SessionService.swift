@@ -7,6 +7,13 @@ private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "gemini-a
 @MainActor
 final class SessionService: NSObject {
 
+    // MARK: - Initialization
+
+    override init() {
+        super.init()
+        setupBackgroundNotificationHandlers()
+    }
+
     // MARK: - Configuration
 
     private static let sessionIdKey = "gemini-app-session-id"
@@ -44,6 +51,7 @@ final class SessionService: NSObject {
     private var sseClient: SSEClient?
     private var reconnectTask: Task<Void, Never>?
     private var isConnecting = false
+    private var wasConnectedBeforeBackground = false
 
     weak var delegate: SessionServiceDelegate?
 
@@ -171,6 +179,30 @@ final class SessionService: NSObject {
         }
     }
 
+    // MARK: - Background Notification Handling
+
+    private func setupBackgroundNotificationHandlers() {
+        NotificationCenter.default.addObserver(
+            forName: appMovedToBackgroundNotificationName,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.prepareForBackground()
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: appMovedToForegroundNotificationName,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.reconnectIfNeeded()
+        }
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     // MARK: - Connection Management
 
     func connect() {
@@ -189,6 +221,31 @@ final class SessionService: NSObject {
         sseClient = nil
         isConnecting = false
         sessionId = nil
+    }
+
+    /// Prepare for app backgrounding - save connection state for potential reconnection
+    func prepareForBackground() {
+        wasConnectedBeforeBackground = (sseClient != nil && sessionId != nil)
+        logger.info("Prepared for background, will reconnect: \(self.wasConnectedBeforeBackground)")
+    }
+
+    /// Reconnect to SSE if connection was active before backgrounding
+    func reconnectIfNeeded() {
+        guard wasConnectedBeforeBackground else {
+            logger.info("No reconnection needed - was not connected before background")
+            return
+        }
+
+        logger.info("Attempting to reconnect after foreground")
+        wasConnectedBeforeBackground = false
+
+        // If we already have a session ID, try to reconnect directly
+        if let sessionId = sessionId {
+            connectSSE(sessionId: sessionId)
+        } else {
+            // Otherwise, restart the full connection
+            connect()
+        }
     }
 
     private func startConnection() async {
@@ -308,7 +365,7 @@ final class SessionService: NSObject {
         }
     }
 
-    func spawnInstance(projectPath: String) async throws -> (instanceId: String, resolvedPath: String) {
+    func spawnInstance(projectPath: String, provider: Provider = .gemini, yolo: Bool = false) async throws -> (instanceId: String, resolvedPath: String) {
         guard let sessionId = sessionId else {
             throw SessionError.noSession
         }
@@ -316,7 +373,7 @@ final class SessionService: NSObject {
         var request = URLRequest(url: baseURL.appendingPathComponent("/api/session/\(sessionId)/command"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(OutgoingMessage.spawnInstance(projectPath: projectPath))
+        request.httpBody = try JSONEncoder().encode(OutgoingMessage.spawnInstance(projectPath: projectPath, provider: provider, yolo: yolo))
 
         let (data, response) = try await URLSession.shared.data(for: request)
 

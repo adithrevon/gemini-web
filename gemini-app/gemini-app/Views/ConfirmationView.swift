@@ -125,21 +125,19 @@ struct ConfirmationView: View {
                 }
                 .buttonStyle(.plain)
 
-                // Always (trust folder)
-                if !isTrustedFolder {
-                    Button {
-                        onConfirm(.proceed_always)
-                    } label: {
-                        Text("Trust")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundStyle(Color.statusConnected)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, Spacing.sm)
-                            .background(Color.statusConnected.opacity(0.15))
-                            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
+                // Always (session-wide)
+                Button {
+                    onConfirm(.proceed_always)
+                } label: {
+                    Text("Always")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Color.statusConnected)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, Spacing.sm)
+                        .background(Color.statusConnected.opacity(0.15))
+                        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
                 }
+                .buttonStyle(.plain)
             }
             .padding(Spacing.md)
         }

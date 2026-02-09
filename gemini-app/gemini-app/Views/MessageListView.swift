@@ -171,6 +171,13 @@ struct GeminiMessageView: View {
 
             Spacer(minLength: 48)
         }
+        .contextMenu {
+            Button {
+                UIPasteboard.general.string = combinedText
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+        }
     }
 }
 

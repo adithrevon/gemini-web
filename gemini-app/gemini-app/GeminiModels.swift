@@ -1,5 +1,52 @@
 import Foundation
 
+// MARK: - Provider
+
+enum Provider: String, Codable, CaseIterable {
+    case gemini
+    case claude
+
+    var displayName: String {
+        switch self {
+        case .gemini: return "Gemini"
+        case .claude: return "Claude"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .gemini: return "sparkles"
+        case .claude: return "brain.head.profile"
+        }
+    }
+
+    var defaultModel: String {
+        switch self {
+        case .gemini: return AppConstants.defaultModel
+        case .claude: return "claude-sonnet-4-5-20250929"
+        }
+    }
+
+    var defaultModels: [ModelOption] {
+        switch self {
+        case .gemini:
+            return [
+                ModelOption(value: AppConstants.defaultModel, label: "Auto (Gemini 2.5)", description: "Let CLI decide", isAuto: true),
+                ModelOption(value: "gemini-2.5-pro", label: "Gemini 2.5 Pro", description: nil, isAuto: false),
+                ModelOption(value: "gemini-2.5-flash", label: "Gemini 2.5 Flash", description: nil, isAuto: false),
+            ]
+        case .claude:
+            return [
+                ModelOption(value: "claude-sonnet-4-5-20250929", label: "Sonnet 4.5", description: nil, isAuto: false),
+                ModelOption(value: "claude-opus-4-6", label: "Opus 4.6", description: nil, isAuto: false),
+                ModelOption(value: "claude-haiku-4-5-20251001", label: "Haiku 4.5", description: nil, isAuto: false),
+            ]
+        }
+    }
+}
+
+// MARK: - Streaming State
+
 enum StreamingState: String, Codable {
     case idle
     case responding
@@ -210,6 +257,7 @@ struct SessionInstanceInfo: Codable {
     let connected: Bool
     let status: InstanceStatus?
     let error: String?
+    let provider: Provider?
 }
 
 struct SessionStateMessage: Decodable {
@@ -320,7 +368,7 @@ enum OutgoingMessage: Encodable {
     case submit(instanceId: String, text: String)
     case confirm(instanceId: String, callId: String, outcome: ConfirmOutcome, correlationId: String?)
     case setModel(instanceId: String, model: String)
-    case spawnInstance(projectPath: String)
+    case spawnInstance(projectPath: String, provider: Provider = .gemini, yolo: Bool = false)
     case terminateInstance(instanceId: String)
     case setActiveInstance(instanceId: String)
     case interrupt(instanceId: String)
@@ -334,6 +382,8 @@ enum OutgoingMessage: Encodable {
         case correlationId
         case model
         case projectPath
+        case provider
+        case yolo
     }
 
     func encode(to encoder: Encoder) throws {
@@ -353,9 +403,11 @@ enum OutgoingMessage: Encodable {
             try container.encode("setModel", forKey: .type)
             try container.encode(instanceId, forKey: .instanceId)
             try container.encode(model, forKey: .model)
-        case .spawnInstance(let projectPath):
+        case .spawnInstance(let projectPath, let provider, let yolo):
             try container.encode("spawnInstance", forKey: .type)
             try container.encode(projectPath, forKey: .projectPath)
+            try container.encode(provider, forKey: .provider)
+            try container.encode(yolo, forKey: .yolo)
         case .terminateInstance(let instanceId):
             try container.encode("terminateInstance", forKey: .type)
             try container.encode(instanceId, forKey: .instanceId)
@@ -385,6 +437,7 @@ struct InstanceState: Identifiable {
     var currentModel: String
     var availableModels: [ModelOption]
     var error: String?
+    var provider: Provider = .gemini
 }
 
 // MARK: - Directory Browsing

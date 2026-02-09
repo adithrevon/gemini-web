@@ -3,9 +3,10 @@ import SwiftUI
 struct NewChatView: View {
     let recentProjects: [String]
     let initialProject: String?
+    let initialProvider: Provider
     let composerDisabled: Bool
     let status: InstanceStatus?
-    let onProjectSelected: (String) -> Void
+    let onProjectSelected: (String, Provider, Bool, String) -> Void  // path, provider, yolo, model
     let onSubmitMessage: (String) -> Void
     let onCancel: (() -> Void)?
     let sessionStore: SessionStore
@@ -13,6 +14,10 @@ struct NewChatView: View {
     @State private var selectedProject: String = ""
     @State private var didSendMessage = false
     @State private var showBrowser = false
+    @State private var selectedProvider: Provider = .gemini
+    @State private var sudoMode: Bool = false
+    @State private var selectedModel: String = Provider.gemini.defaultModel
+    @State private var hasInitialized = false
 
     private var isConnecting: Bool {
         status == .connecting
@@ -29,7 +34,7 @@ struct NewChatView: View {
                     if isConnecting {
                         ConnectionAnimationView()
                     } else {
-                        Image(systemName: "sparkles")
+                        Image(systemName: selectedProvider.icon)
                             .font(.system(size: 48))
                             .foregroundStyle(Color.accentColor.gradient)
                     }
@@ -40,11 +45,48 @@ struct NewChatView: View {
                     .font(.heroTitle)
                     .animation(.easeInOut, value: isConnecting)
 
+                // Provider picker
+                Picker("Provider", selection: $selectedProvider) {
+                    ForEach(Provider.allCases, id: \.self) { provider in
+                        Label(provider.displayName, systemImage: provider.icon)
+                            .tag(provider)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 260)
+                .onChange(of: selectedProvider) { _, newProvider in
+                    // Update model to provider default
+                    selectedModel = newProvider.defaultModel
+                    // When provider changes and a project is already selected,
+                    // re-spawn with the new provider
+                    if !selectedProject.isEmpty {
+                        onProjectSelected(selectedProject, newProvider, sudoMode, selectedModel)
+                    }
+                }
+
+                Toggle(isOn: $sudoMode) {
+                    Label("Sudo", systemImage: "bolt.shield")
+                        .font(.subheadline)
+                }
+                .toggleStyle(.switch)
+                .frame(maxWidth: 260)
+
+                ModelSelectorView(
+                    currentModel: selectedModel,
+                    availableModels: selectedProvider.defaultModels,
+                    disabled: isConnecting,
+                    onSelect: { model in
+                        selectedModel = model
+                    }
+                )
+
                 ProjectSelectorView(
                     selectedProject: $selectedProject,
                     recentProjects: recentProjects,
                     disabled: isConnecting,
-                    onSelect: onProjectSelected,
+                    onSelect: { path in
+                        onProjectSelected(path, selectedProvider, sudoMode, selectedModel)
+                    },
                     onBrowse: {
                         showBrowser = true
                     }
@@ -67,6 +109,10 @@ struct NewChatView: View {
             )
         }
         .onAppear {
+            guard !hasInitialized else { return }
+            hasInitialized = true
+            selectedProvider = initialProvider
+            selectedModel = initialProvider.defaultModel
             if let initial = initialProject {
                 selectedProject = initial
             }
@@ -87,7 +133,7 @@ struct NewChatView: View {
                 isPresented: $showBrowser,
                 onSelect: { path in
                     selectedProject = path
-                    onProjectSelected(path)
+                    onProjectSelected(path, selectedProvider, sudoMode, selectedModel)
                 },
                 sessionStore: sessionStore
             )
@@ -148,9 +194,10 @@ struct ConnectionAnimationView: View {
             "/Users/test/another-project"
         ],
         initialProject: nil,
+        initialProvider: .gemini,
         composerDisabled: false,
         status: .connecting,
-        onProjectSelected: { _ in },
+        onProjectSelected: { _, _, _, _ in },
         onSubmitMessage: { _ in },
         onCancel: nil,
         sessionStore: store

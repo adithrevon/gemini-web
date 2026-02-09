@@ -2,6 +2,7 @@ import SwiftUI
 import Speech
 import AVFoundation
 import Combine
+import SpeechRecognitionKit
 
 struct ComposerView: View {
     let disabled: Bool
@@ -11,8 +12,10 @@ struct ComposerView: View {
 
     @State private var text = ""
     @FocusState private var isFocused: Bool
-    @StateObject private var speechRecognizer = SpeechRecognizer()
+    @StateObject private var speechRecognizer = SpeechRecognitionService()
     @State private var isRecording = false
+    @State private var isPaused = false
+    @State private var loadingRotation: Double = 0
 
     private var canSubmit: Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !disabled
@@ -60,27 +63,61 @@ struct ComposerView: View {
                     }
                     .buttonStyle(.plain)
                 } else if isEmpty && !isRecording && speechRecognizer.isAvailable {
-                    Button {
-                        startRecording()
-                    } label: {
-                        Image(systemName: "mic.circle.fill")
-                            .font(.system(size: 32, weight: .medium))
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(disabled ? Color.secondary.opacity(0.5) : Color.accentColor)
-                    }
-                    .disabled(disabled)
-                    .buttonStyle(.plain)
-                } else if isRecording {
-                    HStack(spacing: Spacing.sm) {
+                    // Mic button with loading indicator
+                    ZStack {
+                        if speechRecognizer.isModelLoading {
+                            Circle()
+                                .trim(from: 0, to: 0.7)
+                                .stroke(Color.accentColor.opacity(0.3), lineWidth: 2)
+                                .frame(width: 36, height: 36)
+                                .rotationEffect(.degrees(loadingRotation))
+                        }
+
                         Button {
-                            cancelRecording()
+                            startRecording()
                         } label: {
-                            Image(systemName: "xmark.circle.fill")
+                            Image(systemName: "mic.circle.fill")
+                                .font(.system(size: 32, weight: .medium))
+                                .symbolRenderingMode(.hierarchical)
+                                .foregroundStyle(
+                                    !speechRecognizer.isModelLoaded || disabled
+                                        ? Color.secondary.opacity(0.5)
+                                        : Color.accentColor
+                                )
+                        }
+                        .disabled(!speechRecognizer.isModelLoaded || disabled)
+                        .buttonStyle(.plain)
+                    }
+                    .onAppear {
+                        if speechRecognizer.isModelLoading {
+                            withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
+                                loadingRotation = 360
+                            }
+                        }
+                    }
+                    .onChange(of: speechRecognizer.isModelLoading) { _, isLoading in
+                        if isLoading {
+                            withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
+                                loadingRotation = 360
+                            }
+                        } else {
+                            loadingRotation = 0
+                        }
+                    }
+                } else if isRecording || isPaused {
+                    HStack(spacing: Spacing.sm) {
+                        // Mic button (toggles recording/pause)
+                        Button {
+                            toggleRecording()
+                        } label: {
+                            Image(systemName: isRecording ? "mic.circle.fill" : "mic.circle")
                                 .font(.system(size: 28, weight: .medium))
-                                .foregroundStyle(Color.secondary)
+                                .symbolRenderingMode(.hierarchical)
+                                .foregroundStyle(isRecording ? Color.accentColor : Color.secondary)
                         }
                         .buttonStyle(.plain)
 
+                        // Up arrow button to send
                         Button {
                             stopAndSend()
                         } label: {
@@ -119,6 +156,9 @@ struct ComposerView: View {
                 text = newValue
             }
         }
+        .onAppear {
+            speechRecognizer.preloadModel()
+        }
     }
 
     private func submitMessage() {
@@ -133,129 +173,36 @@ struct ComposerView: View {
         speechRecognizer.requestAuthorization { authorized in
             if authorized {
                 isRecording = true
+                isPaused = false
                 text = ""
                 speechRecognizer.startTranscribing()
             }
         }
     }
 
-    private func cancelRecording() {
-        speechRecognizer.stopTranscribing()
-        isRecording = false
-        text = ""
+    private func toggleRecording() {
+        if isRecording {
+            // Pause recording
+            speechRecognizer.stopTranscribing()
+            isRecording = false
+            isPaused = true
+        } else if isPaused {
+            // Resume recording
+            speechRecognizer.startTranscribing()
+            isRecording = true
+            isPaused = false
+        }
     }
 
     private func stopAndSend() {
-        speechRecognizer.stopTranscribing()
+        if isRecording {
+            speechRecognizer.stopTranscribing()
+        }
         isRecording = false
+        isPaused = false
         if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             submitMessage()
         }
-    }
-}
-
-// MARK: - Speech Recognizer
-
-class SpeechRecognizer: ObservableObject {
-    @Published var transcript = ""
-    @Published var isAvailable = true
-
-    private var audioEngine: AVAudioEngine?
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
-    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
-
-    func requestAuthorization(completion: @escaping (Bool) -> Void) {
-        SFSpeechRecognizer.requestAuthorization { status in
-            DispatchQueue.main.async {
-                switch status {
-                case .authorized:
-                    AVAudioApplication.requestRecordPermission { granted in
-                        DispatchQueue.main.async {
-                            completion(granted)
-                        }
-                    }
-                default:
-                    completion(false)
-                }
-            }
-        }
-    }
-
-    func startTranscribing() {
-        DispatchQueue.main.async {
-            self.transcript = ""
-        }
-
-        let audioSession = AVAudioSession.sharedInstance()
-        do {
-            try audioSession.setCategory(.record, mode: .measurement, options: .duckOthers)
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-        } catch {
-            DispatchQueue.main.async {
-                self.isAvailable = false
-            }
-            return
-        }
-
-        let audioEngine = AVAudioEngine()
-        self.audioEngine = audioEngine
-
-        let recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-        self.recognitionRequest = recognitionRequest
-        recognitionRequest.shouldReportPartialResults = true
-
-        let inputNode = audioEngine.inputNode
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
-
-        guard recordingFormat.sampleRate > 0 && recordingFormat.channelCount > 0 else {
-            DispatchQueue.main.async {
-                self.isAvailable = false
-            }
-            return
-        }
-
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
-            recognitionRequest.append(buffer)
-        }
-
-        audioEngine.prepare()
-
-        do {
-            try audioEngine.start()
-        } catch {
-            DispatchQueue.main.async {
-                self.isAvailable = false
-            }
-            return
-        }
-
-        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
-            guard let self = self else { return }
-
-            if let result = result {
-                DispatchQueue.main.async {
-                    self.transcript = result.bestTranscription.formattedString
-                }
-            }
-
-            if error != nil || result?.isFinal == true {
-                self.stopTranscribing()
-            }
-        }
-    }
-
-    func stopTranscribing() {
-        audioEngine?.stop()
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        recognitionRequest?.endAudio()
-        recognitionTask?.cancel()
-
-        audioEngine = nil
-        recognitionRequest = nil
-        recognitionTask = nil
-
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
 }
 

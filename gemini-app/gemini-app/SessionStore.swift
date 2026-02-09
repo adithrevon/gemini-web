@@ -1,5 +1,8 @@
 import Foundation
 import SwiftUI
+import os.log
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "gemini-app", category: "SessionStore")
 
 /// Observable state store for session and instance management
 @MainActor
@@ -25,16 +28,49 @@ final class SessionStore: SessionServiceDelegate {
     }
     
     // MARK: - Private
-    
+
     private let service = SessionService()
+    private var appIsInBackground = false
+    private var inAppNotificationManager: InAppNotificationManager?
     
     // MARK: - Initialization
     
     init() {
         service.delegate = self
         recentProjects = service.loadRecentProjects()
+        setupNotificationObservers()
+    }
+
+    private func setupNotificationObservers() {
+        NotificationCenter.default.addObserver(
+            forName: appMovedToBackgroundNotificationName,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.appIsInBackground = true
+                logger.info("SessionStore: app moved to background")
+            }
+        }
+
+        NotificationCenter.default.addObserver(
+            forName: appMovedToForegroundNotificationName,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.appIsInBackground = false
+                logger.info("SessionStore: app moved to foreground")
+            }
+        }
     }
     
+    // MARK: - Notification Management
+
+    func setInAppNotificationManager(_ manager: InAppNotificationManager) {
+        inAppNotificationManager = manager
+    }
+
     // MARK: - Connection
 
     func connect() {
@@ -63,12 +99,12 @@ final class SessionStore: SessionServiceDelegate {
     
     // MARK: - Instance Management
     
-    func spawnInstance(projectPath: String) async -> String? {
+    func spawnInstance(projectPath: String, provider: Provider = .gemini, yolo: Bool = false) async -> String? {
         guard !projectPath.isEmpty else { return nil }
-        
+
         do {
-            let (instanceId, resolvedPath) = try await service.spawnInstance(projectPath: projectPath)
-            
+            let (instanceId, resolvedPath) = try await service.spawnInstance(projectPath: projectPath, provider: provider, yolo: yolo)
+
             // Create local instance state immediately
             instances[instanceId] = InstanceState(
                 id: instanceId,
@@ -78,11 +114,12 @@ final class SessionStore: SessionServiceDelegate {
                 pending: [],
                 streamingState: .idle,
                 isTrustedFolder: false,
-                currentModel: AppConstants.defaultModel,
+                currentModel: provider.defaultModel,
                 availableModels: [],
-                error: nil
+                error: nil,
+                provider: provider
             )
-            
+
             activeInstanceId = instanceId
             return instanceId
         } catch {
@@ -163,7 +200,7 @@ final class SessionStore: SessionServiceDelegate {
             try? await service.interrupt(instanceId)
         }
     }
-    
+
     // MARK: - SessionServiceDelegate
     
     nonisolated func sessionServiceDidConnect(_ service: SessionService) {
@@ -210,10 +247,11 @@ final class SessionStore: SessionServiceDelegate {
     
     private func applySessionState(_ state: SessionStateMessage) {
         var newInstances: [String: InstanceState] = [:]
-        
+
         // Apply instance info
         for info in state.instances {
             let status: InstanceStatus = info.status ?? (info.connected ? .connected : .disconnected)
+            let provider = info.provider ?? instances[info.id]?.provider ?? .gemini
             newInstances[info.id] = InstanceState(
                 id: info.id,
                 projectPath: info.projectPath,
@@ -222,15 +260,17 @@ final class SessionStore: SessionServiceDelegate {
                 pending: [],
                 streamingState: .idle,
                 isTrustedFolder: false,
-                currentModel: AppConstants.defaultModel,
+                currentModel: provider.defaultModel,
                 availableModels: [],
-                error: info.error
+                error: info.error,
+                provider: provider
             )
         }
         
         // Apply snapshots
         for snapshot in state.snapshots {
             let existing = newInstances[snapshot.instanceId]
+            let provider = existing?.provider ?? .gemini
             newInstances[snapshot.instanceId] = InstanceState(
                 id: snapshot.instanceId,
                 projectPath: snapshot.projectPath,
@@ -239,9 +279,10 @@ final class SessionStore: SessionServiceDelegate {
                 pending: snapshot.pending ?? [],
                 streamingState: snapshot.streamingState ?? .idle,
                 isTrustedFolder: snapshot.isTrustedFolder ?? false,
-                currentModel: snapshot.currentModel ?? existing?.currentModel ?? "auto-gemini-2.5",
+                currentModel: snapshot.currentModel ?? existing?.currentModel ?? provider.defaultModel,
                 availableModels: snapshot.availableModels ?? existing?.availableModels ?? [],
-                error: nil
+                error: nil,
+                provider: provider
             )
             
             // Update recent projects
@@ -257,24 +298,85 @@ final class SessionStore: SessionServiceDelegate {
     
     private func applyBridgeUpdate(_ payload: BridgeUpdatePayload) {
         let existing = instances[payload.instanceId]
-        
+        let provider = existing?.provider ?? .gemini
+        let oldStreamingState = existing?.streamingState
+        let newStreamingState = payload.streamingState ?? .idle
+
+        // Detect streaming state transitions for notification triggers
+        let wasStreaming = oldStreamingState != .idle && oldStreamingState != nil
+        let isNowIdle = newStreamingState == .idle
+        let isNowWaitingForConfirmation = newStreamingState == .waiting_for_confirmation
+
+        // Check if app is in background and a conversation completed
+        if wasStreaming && isNowIdle && appIsInBackground {
+            logger.info("Conversation completed while app in background for instance: \(payload.instanceId)")
+            NotificationService.shared.scheduleConversationCompleteNotification(
+                instanceId: payload.instanceId,
+                projectPath: payload.projectPath
+            )
+        }
+
+        // Show in-app notification if conversation completed and user is viewing different instance
+        if wasStreaming && isNowIdle {
+            let isViewingDifferentInstance = activeInstanceId != payload.instanceId && activeInstanceId != nil
+            if isViewingDifferentInstance {
+                logger.info("Showing in-app notification for completed conversation in instance: \(payload.instanceId)")
+                let projectName = payload.projectPath.split(separator: "/").last.map(String.init) ?? payload.projectPath
+                inAppNotificationManager?.show(
+                    instanceId: payload.instanceId,
+                    projectName: projectName,
+                    title: "Conversation Complete"
+                )
+            } else if activeInstanceId == payload.instanceId {
+                logger.info("Not showing notification - user is viewing this instance: \(payload.instanceId)")
+            }
+        }
+
+        // Check if tool confirmation is needed
+        if isNowWaitingForConfirmation && appIsInBackground {
+            // Extract tool name from pending messages if available
+            let toolName = extractToolNameFromPending(payload.pending)
+            logger.info("Tool confirmation needed while app in background for instance: \(payload.instanceId)")
+            NotificationService.shared.scheduleConfirmationNeededNotification(
+                instanceId: payload.instanceId,
+                toolName: toolName,
+                projectPath: payload.projectPath
+            )
+        }
+
+        // Show in-app notification for tool confirmation if viewing different instance
+        if isNowWaitingForConfirmation {
+            let isViewingDifferentInstance = activeInstanceId != payload.instanceId && activeInstanceId != nil
+            if isViewingDifferentInstance {
+                logger.info("Showing in-app notification for confirmation needed in instance: \(payload.instanceId)")
+                let projectName = payload.projectPath.split(separator: "/").last.map(String.init) ?? payload.projectPath
+                let toolName = extractToolNameFromPending(payload.pending)
+                inAppNotificationManager?.show(
+                    instanceId: payload.instanceId,
+                    projectName: projectName,
+                    title: "Action Required: \(toolName)"
+                )
+            }
+        }
+
         instances[payload.instanceId] = InstanceState(
             id: payload.instanceId,
             projectPath: payload.projectPath,
             status: .connected,
             history: payload.history ?? [],
             pending: payload.pending ?? [],
-            streamingState: payload.streamingState ?? .idle,
+            streamingState: newStreamingState,
             isTrustedFolder: payload.isTrustedFolder ?? false,
-            currentModel: payload.currentModel ?? existing?.currentModel ?? "auto-gemini-2.5",
+            currentModel: payload.currentModel ?? existing?.currentModel ?? provider.defaultModel,
             availableModels: payload.availableModels ?? existing?.availableModels ?? [],
-            error: nil
+            error: nil,
+            provider: provider
         )
-        
+
         if activeInstanceId == nil {
             activeInstanceId = payload.instanceId
         }
-        
+
         if !payload.projectPath.isEmpty {
             service.addToRecentProjects(payload.projectPath)
             recentProjects = service.loadRecentProjects()
@@ -291,6 +393,7 @@ final class SessionStore: SessionServiceDelegate {
             existing.error = status.error ?? existing.error
             instances[instanceId] = existing
         } else if status.connected {
+            let provider = instances[instanceId]?.provider ?? .gemini
             instances[instanceId] = InstanceState(
                 id: instanceId,
                 projectPath: "",
@@ -299,24 +402,27 @@ final class SessionStore: SessionServiceDelegate {
                 pending: [],
                 streamingState: .idle,
                 isTrustedFolder: false,
-                currentModel: AppConstants.defaultModel,
+                currentModel: provider.defaultModel,
                 availableModels: [],
-                error: status.error
+                error: status.error,
+                provider: provider
             )
         }
     }
     
     private func applyInstanceList(_ infoList: [SessionInstanceInfo]) {
         var seen = Set<String>()
-        
+
         for info in infoList {
             seen.insert(info.id)
             let status: InstanceStatus = info.status ?? (info.connected ? .connected : .disconnected)
-            
+            let provider = info.provider ?? instances[info.id]?.provider ?? .gemini
+
             if var existing = instances[info.id] {
                 existing.projectPath = info.projectPath
                 existing.status = status
                 existing.error = info.error ?? existing.error
+                existing.provider = provider
                 instances[info.id] = existing
             } else {
                 instances[info.id] = InstanceState(
@@ -327,9 +433,10 @@ final class SessionStore: SessionServiceDelegate {
                     pending: [],
                     streamingState: .idle,
                     isTrustedFolder: false,
-                    currentModel: AppConstants.defaultModel,
+                    currentModel: provider.defaultModel,
                     availableModels: [],
-                    error: info.error
+                    error: info.error,
+                    provider: provider
                 )
             }
         }
@@ -352,6 +459,23 @@ final class SessionStore: SessionServiceDelegate {
         existing.status = .error
         existing.error = error.error
         instances[instanceId] = existing
+    }
+
+    // MARK: - Helper Methods
+
+    private func extractToolNameFromPending(_ pending: [Message]?) -> String {
+        guard let pending = pending else { return "Tool" }
+
+        for message in pending {
+            if case .toolGroup(let tools) = message {
+                // Get the first tool name from the tool group
+                if let firstTool = tools.first {
+                    return firstTool.name
+                }
+            }
+        }
+
+        return "Tool"
     }
 }
 
