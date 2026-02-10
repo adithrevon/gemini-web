@@ -5,7 +5,11 @@ import { homedir } from 'node:os';
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error' | 'cmd' | 'trace';
 
 const LOG_DIR = join(homedir(), '.gemini-web', 'logs');
-try { mkdirSync(LOG_DIR, { recursive: true }); } catch { /* ignore */ }
+try {
+  mkdirSync(LOG_DIR, { recursive: true });
+} catch {
+  /* ignore */
+}
 
 const dateStr = new Date().toISOString().slice(0, 10);
 const LOG_FILE = join(LOG_DIR, `server-${dateStr}.log`);
@@ -17,14 +21,22 @@ const fmtTs = (): string => new Date().toISOString();
 
 function formatArg(a: unknown): string {
   if (typeof a === 'object' && a !== null) {
-    try { return JSON.stringify(a, null, 2); } catch { return String(a); }
+    try {
+      return JSON.stringify(a, null, 2);
+    } catch {
+      return String(a);
+    }
   }
   return String(a);
 }
 
 export function fileLog(level: string, tag: string, ...args: unknown[]): void {
   const line = `${fmtTs()} [${level}] [${tag}] ${args.map(formatArg).join(' ')}\n`;
-  try { appendFileSync(LOG_FILE, line); } catch { /* ignore */ }
+  try {
+    appendFileSync(LOG_FILE, line);
+  } catch {
+    /* ignore */
+  }
 }
 
 let debugEnabled = false;
@@ -47,13 +59,21 @@ export function logInfo(...args: unknown[]): void {
   console.log('[web]', ...args);
 }
 
-export function logCommand(sessionId: string, body: unknown, response: unknown): void {
-  fileLog('CMD', 'command', JSON.stringify({
-    ts: fmtTs(),
-    sessionId,
-    request: body,
-    response,
-  }));
+export function logCommand(
+  sessionId: string,
+  body: unknown,
+  response: unknown,
+): void {
+  fileLog(
+    'CMD',
+    'command',
+    JSON.stringify({
+      ts: fmtTs(),
+      sessionId,
+      request: body,
+      response,
+    }),
+  );
 }
 
 /** Logger scoped to a tag (e.g. 'claude', 'gemini') */

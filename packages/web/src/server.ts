@@ -17,7 +17,12 @@ import type {
 import { GeminiBridge } from './gemini-bridge.js';
 import { ClaudeBridge } from './claude-bridge.js';
 import { handleWsConnection } from './ws-handler.js';
-import { readJsonBody, sendJson, sendSse, resolveProjectPath } from './utils.js';
+import {
+  readJsonBody,
+  sendJson,
+  sendSse,
+  resolveProjectPath,
+} from './utils.js';
 import { log, logInfo, logCommand, fileLog, logFilePath } from './logger.js';
 
 // --- Internal types ---
@@ -55,7 +60,10 @@ export class GeminiWebServer {
     this.httpServer = http.createServer((req, res) => {
       void this._handleRequest(req, res);
     });
-    this.wss = new WebSocketServer({ server: this.httpServer, path: config.wsPath });
+    this.wss = new WebSocketServer({
+      server: this.httpServer,
+      path: config.wsPath,
+    });
     this._setupWss();
   }
 
@@ -65,7 +73,9 @@ export class GeminiWebServer {
       this.httpServer.once('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
           console.error(`[web] ERROR: Port ${p} is already in use.`);
-          console.error(`[web] Kill the existing process: lsof -ti :${p} | xargs kill`);
+          console.error(
+            `[web] Kill the existing process: lsof -ti :${p} | xargs kill`,
+          );
         } else {
           console.error(`[web] ERROR: Failed to start server: ${err.message}`);
         }
@@ -74,11 +84,17 @@ export class GeminiWebServer {
       this.httpServer.listen(p, () => {
         const addr = this.httpServer.address();
         const actualPort = typeof addr === 'object' && addr ? addr.port : p;
-        console.log(`[web] API server listening on http://localhost:${actualPort}`);
-        console.log(`[web] Connect iOS app to this server to spawn CLI instances.`);
+        console.log(
+          `[web] API server listening on http://localhost:${actualPort}`,
+        );
+        console.log(
+          `[web] Connect iOS app to this server to spawn CLI instances.`,
+        );
         console.log(`[web] Logs → ${logFilePath}`);
         if (!this.config.debug) {
-          console.log(`[web] Set GEMINI_WEB_DEBUG=1 for verbose console output.`);
+          console.log(
+            `[web] Set GEMINI_WEB_DEBUG=1 for verbose console output.`,
+          );
         }
         resolve(actualPort);
       });
@@ -94,7 +110,11 @@ export class GeminiWebServer {
       // Close all SSE connections
       for (const session of this.sessions.values()) {
         for (const res of session.sseClients) {
-          try { res.end(); } catch { /* ignore */ }
+          try {
+            res.end();
+          } catch {
+            /* ignore */
+          }
         }
       }
       this.wss.close(() => {
@@ -142,7 +162,10 @@ export class GeminiWebServer {
     return list;
   }
 
-  private _sendToSession(sessionId: string, payload: SseEvent | Record<string, unknown>): void {
+  private _sendToSession(
+    sessionId: string,
+    payload: SseEvent | Record<string, unknown>,
+  ): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
     session.lastSeenAt = Date.now();
@@ -155,7 +178,9 @@ export class GeminiWebServer {
     }
   }
 
-  private _broadcastToAllSessions(payload: SseEvent | Record<string, unknown>): void {
+  private _broadcastToAllSessions(
+    payload: SseEvent | Record<string, unknown>,
+  ): void {
     for (const session of this.sessions.values()) {
       this._sendToSession(session.id, payload);
     }
@@ -219,7 +244,10 @@ export class GeminiWebServer {
     yolo = false,
   ): Promise<void> {
     const callbacks = {
-      onStatusChange: (status: 'connecting' | 'connected' | 'disconnected' | 'error', error?: string) => {
+      onStatusChange: (
+        status: 'connecting' | 'connected' | 'disconnected' | 'error',
+        error?: string,
+      ) => {
         const inst = this.instances.get(instanceId);
         if (!inst) return;
         inst.status = status;
@@ -227,9 +255,13 @@ export class GeminiWebServer {
         else if (status === 'connected') inst.error = null;
 
         if (status === 'connected') {
-          logInfo(`gemini CLI connected for instance ${instanceId.slice(0, 8)}…`);
+          logInfo(
+            `gemini CLI connected for instance ${instanceId.slice(0, 8)}…`,
+          );
         } else if (status === 'error') {
-          logInfo(`gemini instance ${instanceId.slice(0, 8)}… error: ${error ?? 'unknown'}`);
+          logInfo(
+            `gemini instance ${instanceId.slice(0, 8)}… error: ${error ?? 'unknown'}`,
+          );
         }
 
         if (inst.sessionId) {
@@ -317,16 +349,28 @@ export class GeminiWebServer {
     resolvedPath: string,
     yolo = false,
   ): Promise<void> {
-    log('spawn claude', { instanceId, requestedPath: projectPath, resolvedPath });
+    log('spawn claude', {
+      instanceId,
+      requestedPath: projectPath,
+      resolvedPath,
+    });
 
-    const emitUpdate = (snapshot: { type: 'bridge:update'; payload: BridgeUpdatePayload }) => {
+    const emitUpdate = (snapshot: {
+      type: 'bridge:update';
+      payload: BridgeUpdatePayload;
+    }) => {
       const inst = this.instances.get(instanceId);
       if (!inst) return;
       inst.lastSnapshot = snapshot.payload;
       this._sendToSession(sessionId, snapshot);
     };
 
-    const bridge = new ClaudeBridge({ instanceId, projectPath: resolvedPath, emitUpdate, yolo });
+    const bridge = new ClaudeBridge({
+      instanceId,
+      projectPath: resolvedPath,
+      emitUpdate,
+      yolo,
+    });
 
     const inst: Instance = {
       id: instanceId,
@@ -368,7 +412,10 @@ export class GeminiWebServer {
       this._sendInstanceList(sessionId);
 
       // Emit initial empty snapshot
-      emitUpdate({ type: 'bridge:update', payload: bridge.accumulator.snapshot() });
+      emitUpdate({
+        type: 'bridge:update',
+        payload: bridge.accumulator.snapshot(),
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       log('Claude spawn error:', msg);
@@ -428,7 +475,11 @@ export class GeminiWebServer {
           if (!inst || inst.providerName !== 'gemini') return null;
           return inst.provider as GeminiBridge;
         },
-        onOrphanCliConnect: (instanceId: string, socket: WebSocket, payload: BridgeUpdatePayload) => {
+        onOrphanCliConnect: (
+          instanceId: string,
+          socket: WebSocket,
+          payload: BridgeUpdatePayload,
+        ) => {
           // CLI connected but we didn't spawn it — create orphan instance entry
           const bridge = new GeminiBridge({
             instanceId,
@@ -452,7 +503,10 @@ export class GeminiWebServer {
                 const inst = this.instances.get(instanceId);
                 if (!inst) return;
                 inst.lastSnapshot = p;
-                this._broadcastToAllSessions({ type: 'bridge:update', payload: p });
+                this._broadcastToAllSessions({
+                  type: 'bridge:update',
+                  payload: p,
+                });
               },
               onExit: () => this._cleanupInstance(instanceId, 'exit'),
               onError: (msg) => this._markInstanceError(instanceId, msg),
@@ -487,7 +541,10 @@ export class GeminiWebServer {
 
   // --- HTTP request handling ---
 
-  private async _handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+  private async _handleRequest(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
     try {
       const url = new URL(
         req.url ?? '/',
@@ -515,15 +572,22 @@ export class GeminiWebServer {
 
       // Create/resume session
       if (url.pathname === '/api/session' && req.method === 'POST') {
-        const body = await readJsonBody(req) as Record<string, unknown> | null;
+        const body = (await readJsonBody(req)) as Record<
+          string,
+          unknown
+        > | null;
         const requestedId =
-          body && typeof body['sessionId'] === 'string' ? body['sessionId'] : null;
+          body && typeof body['sessionId'] === 'string'
+            ? body['sessionId']
+            : null;
         const session =
           requestedId && this.sessions.has(requestedId)
             ? this.sessions.get(requestedId)!
             : this._createSession();
         session.lastSeenAt = Date.now();
-        logInfo(`session ${session.id.slice(0, 8)}… (${requestedId ? 'resumed' : 'new'})`);
+        logInfo(
+          `session ${session.id.slice(0, 8)}… (${requestedId ? 'resumed' : 'new'})`,
+        );
         sendJson(res, 200, { sessionId: session.id });
         return;
       }
@@ -533,7 +597,9 @@ export class GeminiWebServer {
         const parts = url.pathname.split('/').filter(Boolean);
         const rawSessionId = parts[2];
         const action = parts[3];
-        const sessionId = rawSessionId ? decodeURIComponent(rawSessionId) : null;
+        const sessionId = rawSessionId
+          ? decodeURIComponent(rawSessionId)
+          : null;
         if (!sessionId) {
           sendJson(res, 404, { error: 'Session not found' });
           return;
@@ -591,12 +657,21 @@ export class GeminiWebServer {
         .sort((a, b) => a.name.localeCompare(b.name));
 
       const projectIndicators = [
-        'package.json', '.git', 'Cargo.toml', 'go.mod',
-        'pyproject.toml', 'Gemfile', '.xcodeproj', '.xcworkspace',
+        'package.json',
+        '.git',
+        'Cargo.toml',
+        'go.mod',
+        'pyproject.toml',
+        'Gemfile',
+        '.xcodeproj',
+        '.xcworkspace',
       ];
       const isProject = entries.some((e) =>
         projectIndicators.some(
-          (indicator) => e.name === indicator || e.name.endsWith('.xcodeproj') || e.name.endsWith('.xcworkspace'),
+          (indicator) =>
+            e.name === indicator ||
+            e.name.endsWith('.xcodeproj') ||
+            e.name.endsWith('.xcworkspace'),
         ),
       );
 
@@ -608,7 +683,8 @@ export class GeminiWebServer {
         name: path.basename(resolvedPath),
       });
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Failed to read directory';
+      const msg =
+        err instanceof Error ? err.message : 'Failed to read directory';
       sendJson(res, 400, { error: msg });
     }
   }
@@ -632,11 +708,18 @@ export class GeminiWebServer {
 
       const entries = readdirSync(resolvedPath);
       const projectIndicators = [
-        'package.json', '.git', 'Cargo.toml', 'go.mod',
-        'pyproject.toml', 'Gemfile',
+        'package.json',
+        '.git',
+        'Cargo.toml',
+        'go.mod',
+        'pyproject.toml',
+        'Gemfile',
       ];
-      const isProject = entries.some((e) =>
-        projectIndicators.includes(e) || e.endsWith('.xcodeproj') || e.endsWith('.xcworkspace'),
+      const isProject = entries.some(
+        (e) =>
+          projectIndicators.includes(e) ||
+          e.endsWith('.xcodeproj') ||
+          e.endsWith('.xcworkspace'),
       );
 
       sendJson(res, 200, {
@@ -650,11 +733,15 @@ export class GeminiWebServer {
     }
   }
 
-  private _handleSseEvents(session: Session, req: http.IncomingMessage, res: http.ServerResponse): void {
+  private _handleSseEvents(
+    session: Session,
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): void {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
-      'Connection': 'keep-alive',
+      Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     });
     res.write('\n');
@@ -668,8 +755,12 @@ export class GeminiWebServer {
     });
   }
 
-  private async _handleCommand(session: Session, req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    const body = await readJsonBody(req) as Record<string, unknown> | null;
+  private async _handleCommand(
+    session: Session,
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    const body = (await readJsonBody(req)) as Record<string, unknown> | null;
     if (!body || typeof body['type'] !== 'string') {
       sendJson(res, 400, { error: 'Invalid payload' });
       return;
@@ -680,22 +771,41 @@ export class GeminiWebServer {
 
     // --- spawnInstance ---
     if (cmdType === 'spawnInstance') {
-      const projectPath = typeof body['projectPath'] === 'string' ? body['projectPath'] : '';
+      const projectPath =
+        typeof body['projectPath'] === 'string' ? body['projectPath'] : '';
       if (!projectPath) {
-        logCommand(sessionId, body, { status: 400, error: 'Missing projectPath' });
+        logCommand(sessionId, body, {
+          status: 400,
+          error: 'Missing projectPath',
+        });
         sendJson(res, 400, { error: 'Missing projectPath' });
         return;
       }
-      const providerStr = typeof body['provider'] === 'string' ? body['provider'] : 'gemini';
+      const providerStr =
+        typeof body['provider'] === 'string' ? body['provider'] : 'gemini';
       const yolo = body['yolo'] === true;
       const instanceId = crypto.randomUUID();
       const resolved = resolveProjectPath(projectPath, this.config.rootDir);
-      logInfo(`spawn ${providerStr} instance ${instanceId.slice(0, 8)}… at ${resolved}${yolo ? ' (yolo)' : ''}`);
+      logInfo(
+        `spawn ${providerStr} instance ${instanceId.slice(0, 8)}… at ${resolved}${yolo ? ' (yolo)' : ''}`,
+      );
 
       if (providerStr === 'claude') {
-        void this._spawnClaudeInstance(instanceId, projectPath, sessionId, resolved, yolo);
+        void this._spawnClaudeInstance(
+          instanceId,
+          projectPath,
+          sessionId,
+          resolved,
+          yolo,
+        );
       } else {
-        void this._spawnGeminiInstance(instanceId, projectPath, sessionId, resolved, yolo);
+        void this._spawnGeminiInstance(
+          instanceId,
+          projectPath,
+          sessionId,
+          resolved,
+          yolo,
+        );
       }
       const resp = { instanceId, resolvedPath: resolved };
       logCommand(sessionId, body, { status: 200, ...resp });
@@ -705,19 +815,28 @@ export class GeminiWebServer {
 
     // --- terminateInstance ---
     if (cmdType === 'terminateInstance') {
-      const instanceId = typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
+      const instanceId =
+        typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
       if (!instanceId) {
-        logCommand(sessionId, body, { status: 400, error: 'Missing instanceId' });
+        logCommand(sessionId, body, {
+          status: 400,
+          error: 'Missing instanceId',
+        });
         sendJson(res, 400, { error: 'Missing instanceId' });
         return;
       }
       const inst = this.instances.get(instanceId);
       if (!inst || inst.sessionId !== sessionId) {
-        logCommand(sessionId, body, { status: 403, error: 'Instance not found in session' });
+        logCommand(sessionId, body, {
+          status: 403,
+          error: 'Instance not found in session',
+        });
         sendJson(res, 403, { error: 'Instance not found in session' });
         return;
       }
-      logInfo(`terminate ${inst.providerName} instance ${instanceId.slice(0, 8)}…`);
+      logInfo(
+        `terminate ${inst.providerName} instance ${instanceId.slice(0, 8)}…`,
+      );
       this._terminateInstance(instanceId);
       logCommand(sessionId, body, { status: 200, ok: true });
       sendJson(res, 200, { ok: true });
@@ -726,11 +845,15 @@ export class GeminiWebServer {
 
     // --- setActiveInstance ---
     if (cmdType === 'setActiveInstance') {
-      const instanceId = typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
+      const instanceId =
+        typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
       if (instanceId) {
         const inst = this.instances.get(instanceId);
         if (!inst || inst.sessionId !== sessionId) {
-          logCommand(sessionId, body, { status: 403, error: 'Instance not found in session' });
+          logCommand(sessionId, body, {
+            status: 403,
+            error: 'Instance not found in session',
+          });
           sendJson(res, 403, { error: 'Instance not found in session' });
           return;
         }
@@ -743,7 +866,8 @@ export class GeminiWebServer {
 
     // --- interrupt ---
     if (cmdType === 'interrupt') {
-      const instanceId = typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
+      const instanceId =
+        typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
       if (!instanceId) {
         sendJson(res, 400, { error: 'Missing instanceId' });
         return;
@@ -756,15 +880,25 @@ export class GeminiWebServer {
       log('interrupt instance', { instanceId, provider: inst.providerName });
       try {
         await inst.provider.interrupt();
-        logCommand(sessionId, body, { status: 200, ok: true, provider: inst.providerName });
+        logCommand(sessionId, body, {
+          status: 200,
+          ok: true,
+          provider: inst.providerName,
+        });
         sendJson(res, 200, { ok: true });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
         log('interrupt error', msg);
         // For Gemini: if process not running, return 409
-        if (inst.providerName === 'gemini' && msg === 'CLI process not running') {
+        if (
+          inst.providerName === 'gemini' &&
+          msg === 'CLI process not running'
+        ) {
           sendJson(res, 409, { error: 'CLI process not running' });
-        } else if (inst.providerName === 'gemini' && msg === 'CLI not connected') {
+        } else if (
+          inst.providerName === 'gemini' &&
+          msg === 'CLI not connected'
+        ) {
           this._sendToSession(sessionId, {
             type: 'bridge:cli-status',
             connected: false,
@@ -774,7 +908,11 @@ export class GeminiWebServer {
           this._sendInstanceList(sessionId);
           sendJson(res, 409, { error: 'CLI not connected' });
         } else {
-          logCommand(sessionId, body, { status: 500, error: 'Failed to interrupt', provider: inst.providerName });
+          logCommand(sessionId, body, {
+            status: 500,
+            error: 'Failed to interrupt',
+            provider: inst.providerName,
+          });
           sendJson(res, 500, { error: 'Failed to interrupt' });
         }
       }
@@ -782,8 +920,13 @@ export class GeminiWebServer {
     }
 
     // --- submit / confirm / setModel ---
-    if (cmdType === 'submit' || cmdType === 'confirm' || cmdType === 'setModel') {
-      const instanceId = typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
+    if (
+      cmdType === 'submit' ||
+      cmdType === 'confirm' ||
+      cmdType === 'setModel'
+    ) {
+      const instanceId =
+        typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
       if (!instanceId) {
         sendJson(res, 400, { error: 'Missing instanceId' });
         return;
@@ -797,20 +940,33 @@ export class GeminiWebServer {
       try {
         if (cmdType === 'submit') {
           const text = typeof body['text'] === 'string' ? body['text'] : '';
-          log('submit', { instanceId, textLen: text.length, provider: inst.providerName });
+          log('submit', {
+            instanceId,
+            textLen: text.length,
+            provider: inst.providerName,
+          });
           await inst.provider.submitMessage(text);
         } else if (cmdType === 'setModel') {
           const model = typeof body['model'] === 'string' ? body['model'] : '';
           log('setModel', { instanceId, model, provider: inst.providerName });
           await inst.provider.setModel(model);
         } else if (cmdType === 'confirm') {
-          const callId = typeof body['callId'] === 'string' ? body['callId'] : '';
-          const outcome = typeof body['outcome'] === 'string' ? body['outcome'] : '';
-          const correlationId = typeof body['correlationId'] === 'string' ? body['correlationId'] : undefined;
+          const callId =
+            typeof body['callId'] === 'string' ? body['callId'] : '';
+          const outcome =
+            typeof body['outcome'] === 'string' ? body['outcome'] : '';
+          const correlationId =
+            typeof body['correlationId'] === 'string'
+              ? body['correlationId']
+              : undefined;
           log('confirm', { instanceId, callId, provider: inst.providerName });
           await inst.provider.confirm(callId, outcome, correlationId);
         }
-        logCommand(sessionId, body, { status: 200, ok: true, provider: inst.providerName });
+        logCommand(sessionId, body, {
+          status: 200,
+          ok: true,
+          provider: inst.providerName,
+        });
         sendJson(res, 200, { ok: true });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -823,11 +979,19 @@ export class GeminiWebServer {
             status: 'disconnected' as const,
           });
           this._sendInstanceList(sessionId);
-          logCommand(sessionId, body, { status: 409, error: 'CLI not connected', provider: 'gemini' });
+          logCommand(sessionId, body, {
+            status: 409,
+            error: 'CLI not connected',
+            provider: 'gemini',
+          });
           sendJson(res, 409, { error: 'CLI not connected' });
         } else {
           log('command error:', msg);
-          logCommand(sessionId, body, { status: 500, error: msg, provider: inst.providerName });
+          logCommand(sessionId, body, {
+            status: 500,
+            error: msg,
+            provider: inst.providerName,
+          });
           sendJson(res, 500, { error: msg });
         }
       }

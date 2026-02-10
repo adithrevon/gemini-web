@@ -42,7 +42,7 @@ export function handleWsConnection(
     if (!message) return;
 
     if (message['type'] === 'bridge:hello') {
-      role = (message['role'] === 'cli') ? 'cli' : 'web';
+      role = message['role'] === 'cli' ? 'cli' : 'web';
       log('hello', role);
       if (role !== 'cli') {
         socket.close();

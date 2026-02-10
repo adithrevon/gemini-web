@@ -15,26 +15,26 @@ npm start            # Run compiled JS
 
 ## Scripts
 
-| Script          | Description                                        |
-| --------------- | -------------------------------------------------- |
-| `npm run dev`   | Run from source with tsx                           |
-| `npm start`     | Run compiled output from `dist/`                   |
-| `npm run build` | Compile TypeScript to `dist/`                      |
-| `npm test`      | Run integration + unit tests with vitest           |
-| `npm run typecheck` | Type-check without emitting                    |
-| `npm run start:debug` | Run with debug + CLI log output enabled      |
+| Script                | Description                              |
+| --------------------- | ---------------------------------------- |
+| `npm run dev`         | Run from source with tsx                 |
+| `npm start`           | Run compiled output from `dist/`         |
+| `npm run build`       | Compile TypeScript to `dist/`            |
+| `npm test`            | Run integration + unit tests with vitest |
+| `npm run typecheck`   | Type-check without emitting              |
+| `npm run start:debug` | Run with debug + CLI log output enabled  |
 
 ## Environment Variables
 
-| Variable                      | Default  | Description                                |
-| ----------------------------- | -------- | ------------------------------------------ |
-| `GEMINI_WEB_PORT`             | `7337`   | HTTP server port                           |
-| `GEMINI_WEB_WS_PATH`         | `/ws`    | WebSocket endpoint path                    |
-| `GEMINI_WEB_SPAWN_TIMEOUT_MS` | `18000` | CLI connect timeout (ms)                   |
-| `GEMINI_WEB_DEBUG`            | -        | Set to `1` for console debug logging       |
-| `GEMINI_WEB_CLI_LOG`          | -        | Set to `1` to pipe CLI stdout to terminal  |
-| `GEMINI_WEB_CLI_PATH`         | -        | Override path to Gemini CLI entry point     |
-| `GEMINI_WEB_CLI_ARGS`         | -        | Extra CLI arguments (space-separated)      |
+| Variable                      | Default | Description                               |
+| ----------------------------- | ------- | ----------------------------------------- |
+| `GEMINI_WEB_PORT`             | `7337`  | HTTP server port                          |
+| `GEMINI_WEB_WS_PATH`          | `/ws`   | WebSocket endpoint path                   |
+| `GEMINI_WEB_SPAWN_TIMEOUT_MS` | `18000` | CLI connect timeout (ms)                  |
+| `GEMINI_WEB_DEBUG`            | -       | Set to `1` for console debug logging      |
+| `GEMINI_WEB_CLI_LOG`          | -       | Set to `1` to pipe CLI stdout to terminal |
+| `GEMINI_WEB_CLI_PATH`         | -       | Override path to Gemini CLI entry point   |
+| `GEMINI_WEB_CLI_ARGS`         | -       | Extra CLI arguments (space-separated)     |
 
 ## Architecture
 
@@ -57,7 +57,11 @@ interface Provider {
   submitMessage(text: string): Promise<void>;
   interrupt(): Promise<void>;
   setModel(model: string): Promise<void>;
-  confirm(callId: string, outcome: string, correlationId?: string): Promise<void>;
+  confirm(
+    callId: string,
+    outcome: string,
+    correlationId?: string,
+  ): Promise<void>;
   destroy(): void;
   getSnapshot(): BridgeUpdatePayload;
 }
@@ -87,29 +91,29 @@ src/
 
 ## API Endpoints
 
-| Method | Path                              | Description                 |
-| ------ | --------------------------------- | --------------------------- |
-| GET    | `/health`                         | Health check                |
-| POST   | `/api/session`                    | Create or resume a session  |
-| GET    | `/api/session/:id/events`         | SSE event stream            |
-| POST   | `/api/session/:id/command`        | Send a command              |
-| GET    | `/api/browse?path=...`            | Browse directories          |
-| GET    | `/api/validate-path?path=...`     | Validate a directory path   |
+| Method | Path                          | Description                |
+| ------ | ----------------------------- | -------------------------- |
+| GET    | `/health`                     | Health check               |
+| POST   | `/api/session`                | Create or resume a session |
+| GET    | `/api/session/:id/events`     | SSE event stream           |
+| POST   | `/api/session/:id/command`    | Send a command             |
+| GET    | `/api/browse?path=...`        | Browse directories         |
+| GET    | `/api/validate-path?path=...` | Validate a directory path  |
 
 ### Commands (via `/api/session/:id/command`)
 
-| type               | Required fields                     |
-| ------------------ | ----------------------------------- |
-| `spawnInstance`    | `projectPath`, optional `provider`  |
-| `terminateInstance`| `instanceId`                        |
-| `setActiveInstance`| `instanceId`                        |
-| `submit`           | `instanceId`, `text`                |
-| `confirm`          | `instanceId`, `callId`, `outcome`   |
-| `setModel`         | `instanceId`, `model`               |
-| `interrupt`        | `instanceId`                        |
+| type                | Required fields                    |
+| ------------------- | ---------------------------------- |
+| `spawnInstance`     | `projectPath`, optional `provider` |
+| `terminateInstance` | `instanceId`                       |
+| `setActiveInstance` | `instanceId`                       |
+| `submit`            | `instanceId`, `text`               |
+| `confirm`           | `instanceId`, `callId`, `outcome`  |
+| `setModel`          | `instanceId`, `model`              |
+| `interrupt`         | `instanceId`                       |
 
 ## Logging
 
-Logs are written to `~/.gemini-web/logs/server-YYYY-MM-DD.log` (always on).
-Set `GEMINI_WEB_DEBUG=1` for console output. Set `GEMINI_WEB_CLI_LOG=1` to see
-CLI process stdout in the terminal.
+Logs are written to `~/.gemini-web/logs/server-YYYY-MM-DD.log` (always on). Set
+`GEMINI_WEB_DEBUG=1` for console output. Set `GEMINI_WEB_CLI_LOG=1` to see CLI
+process stdout in the terminal.

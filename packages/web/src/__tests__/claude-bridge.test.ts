@@ -78,13 +78,22 @@ describe('ClaudeStateAccumulator', () => {
     acc.addUserMessage('hi');
 
     acc.handleStreamEvent({
-      event: { type: 'content_block_start', content_block: { type: 'text', text: '' } },
+      event: {
+        type: 'content_block_start',
+        content_block: { type: 'text', text: '' },
+      },
     });
     acc.handleStreamEvent({
-      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hello' } },
+      event: {
+        type: 'content_block_delta',
+        delta: { type: 'text_delta', text: 'Hello' },
+      },
     });
     acc.handleStreamEvent({
-      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: ' world' } },
+      event: {
+        type: 'content_block_delta',
+        delta: { type: 'text_delta', text: ' world' },
+      },
     });
 
     const snap = acc.snapshot();
@@ -103,7 +112,12 @@ describe('ClaudeStateAccumulator', () => {
       message: {
         content: [
           { type: 'text', text: 'Let me check.' },
-          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } },
+          {
+            type: 'tool_use',
+            id: 'tool-1',
+            name: 'Bash',
+            input: { command: 'ls' },
+          },
         ],
       },
     });
@@ -129,7 +143,12 @@ describe('ClaudeStateAccumulator', () => {
       parent_tool_use_id: null,
       message: {
         content: [
-          { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'ls' } },
+          {
+            type: 'tool_use',
+            id: 'tool-1',
+            name: 'Bash',
+            input: { command: 'ls' },
+          },
         ],
       },
     });
@@ -140,7 +159,12 @@ describe('ClaudeStateAccumulator', () => {
       parent_tool_use_id: null,
       message: {
         content: [
-          { type: 'tool_result', tool_use_id: 'tool-1', is_error: false, content: [{ type: 'text', text: 'file1.txt\nfile2.txt' }] },
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-1',
+            is_error: false,
+            content: [{ type: 'text', text: 'file1.txt\nfile2.txt' }],
+          },
         ],
       },
     });
@@ -160,10 +184,16 @@ describe('ClaudeStateAccumulator', () => {
     const acc = new ClaudeStateAccumulator('inst-1', '/tmp');
     acc.addUserMessage('hi');
     acc.handleStreamEvent({
-      event: { type: 'content_block_start', content_block: { type: 'text', text: '' } },
+      event: {
+        type: 'content_block_start',
+        content_block: { type: 'text', text: '' },
+      },
     });
     acc.handleStreamEvent({
-      event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Hello!' } },
+      event: {
+        type: 'content_block_delta',
+        delta: { type: 'text_delta', text: 'Hello!' },
+      },
     });
     acc.handleResult({ subtype: 'success', session_id: 's1' });
 
@@ -178,8 +208,16 @@ describe('ClaudeStateAccumulator', () => {
   it('should set models', () => {
     const acc = new ClaudeStateAccumulator('inst-1', '/tmp');
     acc.setModels([
-      { value: 'claude-sonnet-4-5-20250929', displayName: 'Claude Sonnet 4.5', description: 'Fast' },
-      { value: 'claude-opus-4-6', displayName: 'Claude Opus 4.6', description: 'Powerful' },
+      {
+        value: 'claude-sonnet-4-5-20250929',
+        displayName: 'Claude Sonnet 4.5',
+        description: 'Fast',
+      },
+      {
+        value: 'claude-opus-4-6',
+        displayName: 'Claude Opus 4.6',
+        description: 'Powerful',
+      },
     ]);
     const snap = acc.snapshot();
     expect(snap.availableModels).toHaveLength(2);
@@ -197,7 +235,12 @@ describe('ClaudeStateAccumulator', () => {
         parent_tool_use_id: null,
         message: {
           content: [
-            { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'echo hello' } },
+            {
+              type: 'tool_use',
+              id: 't1',
+              name: 'Bash',
+              input: { command: 'echo hello' },
+            },
           ],
         },
       });
@@ -217,7 +260,12 @@ describe('ClaudeStateAccumulator', () => {
         parent_tool_use_id: null,
         message: {
           content: [
-            { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/tmp/foo.txt' } },
+            {
+              type: 'tool_use',
+              id: 't1',
+              name: 'Read',
+              input: { file_path: '/tmp/foo.txt' },
+            },
           ],
         },
       });

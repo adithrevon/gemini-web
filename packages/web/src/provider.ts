@@ -10,7 +10,11 @@ export interface Provider {
   submitMessage(text: string): Promise<void>;
   interrupt(): Promise<void>;
   setModel(model: string): Promise<void>;
-  confirm(callId: string, outcome: string, correlationId?: string): Promise<void>;
+  confirm(
+    callId: string,
+    outcome: string,
+    correlationId?: string,
+  ): Promise<void>;
   destroy(): void;
   getSnapshot(): BridgeUpdatePayload;
 }

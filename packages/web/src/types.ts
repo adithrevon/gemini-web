@@ -9,9 +9,17 @@ export type ProviderName = 'gemini' | 'claude';
 
 // --- Instance & Session status ---
 
-export type InstanceStatus = 'connecting' | 'connected' | 'disconnected' | 'error';
+export type InstanceStatus =
+  | 'connecting'
+  | 'connected'
+  | 'disconnected'
+  | 'error';
 
-export type StreamingState = 'idle' | 'responding' | 'tool' | 'waiting_for_confirmation';
+export type StreamingState =
+  | 'idle'
+  | 'responding'
+  | 'tool'
+  | 'waiting_for_confirmation';
 
 // --- Model ---
 

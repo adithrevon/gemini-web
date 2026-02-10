@@ -5,7 +5,9 @@ import { existsSync, realpathSync } from 'node:fs';
 import { WebSocket } from 'ws';
 
 /** Read JSON body from an incoming HTTP request. Returns null on empty/invalid. */
-export async function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+export async function readJsonBody(
+  req: http.IncomingMessage,
+): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
     chunks.push(chunk as Buffer);
@@ -13,14 +15,18 @@ export async function readJsonBody(req: http.IncomingMessage): Promise<unknown> 
   if (chunks.length === 0) return null;
   try {
     const text = Buffer.concat(chunks).toString('utf8');
-    return text ? JSON.parse(text) as unknown : null;
+    return text ? (JSON.parse(text) as unknown) : null;
   } catch {
     return null;
   }
 }
 
 /** Send a JSON response. */
-export function sendJson(res: http.ServerResponse, status: number, payload: unknown): void {
+export function sendJson(
+  res: http.ServerResponse,
+  status: number,
+  payload: unknown,
+): void {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(payload));
 }
@@ -46,7 +52,10 @@ export function expandTilde(filePath: string): string {
 }
 
 /** Resolve a project path: expand tilde, check existence, resolve symlinks. */
-export function resolveProjectPath(projectPath: string, rootDir: string): string {
+export function resolveProjectPath(
+  projectPath: string,
+  rootDir: string,
+): string {
   const expandedPath = expandTilde(projectPath);
   const basePath = existsSync(expandedPath) ? expandedPath : rootDir;
   try {

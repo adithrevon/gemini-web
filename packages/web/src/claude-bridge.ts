@@ -14,7 +14,9 @@ const log = createTaggedLogger('claude');
 // AsyncPushQueue — push-based async iterable for multi-turn streaming input
 // ---------------------------------------------------------------------------
 
-type QueueResult<T> = { value: T; done: false } | { value: undefined; done: true };
+type QueueResult<T> =
+  | { value: T; done: false }
+  | { value: undefined; done: true };
 
 export class AsyncPushQueue<T> implements AsyncIterable<T> {
   private _buffer: T[] = [];
@@ -82,7 +84,8 @@ export class ClaudeStateAccumulator {
   projectPath: string;
   history: HistoryMessage[] = [];
   pending: HistoryMessage[] = [];
-  streamingState: 'idle' | 'responding' | 'tool' | 'waiting_for_confirmation' = 'idle';
+  streamingState: 'idle' | 'responding' | 'tool' | 'waiting_for_confirmation' =
+    'idle';
   currentModel = '';
   availableModels: ModelOption[] = [];
 
@@ -109,7 +112,9 @@ export class ClaudeStateAccumulator {
     };
   }
 
-  setModels(models: Array<{ value: string; displayName: string; description?: string }>): void {
+  setModels(
+    models: Array<{ value: string; displayName: string; description?: string }>,
+  ): void {
     this.availableModels = models.map((m) => ({
       value: m.value,
       label: m.displayName,
@@ -174,8 +179,18 @@ export class ClaudeStateAccumulator {
       return;
     }
 
-    if (evt.type === 'message_start' || evt.type === 'message_delta' || evt.type === 'message_stop') {
-      log.debug('stream:', evt.type, evt.type === 'message_delta' ? { stop_reason: evt.delta?.stop_reason } : '');
+    if (
+      evt.type === 'message_start' ||
+      evt.type === 'message_delta' ||
+      evt.type === 'message_stop'
+    ) {
+      log.debug(
+        'stream:',
+        evt.type,
+        evt.type === 'message_delta'
+          ? { stop_reason: evt.delta?.stop_reason }
+          : '',
+      );
       return;
     }
 
@@ -188,15 +203,17 @@ export class ClaudeStateAccumulator {
       pending.push({ type: 'gemini', text: this._streamingText });
     }
     if (this._pendingToolUses.size > 0) {
-      const tools: ToolCallInfo[] = [...this._pendingToolUses.values()].map((t) => ({
-        callId: t.callId,
-        name: t.name,
-        description: t.description,
-        status: t.status,
-        resultDisplay: t.resultDisplay ?? null,
-        confirmationDetails: null,
-        correlationId: null,
-      }));
+      const tools: ToolCallInfo[] = [...this._pendingToolUses.values()].map(
+        (t) => ({
+          callId: t.callId,
+          name: t.name,
+          description: t.description,
+          status: t.status,
+          resultDisplay: t.resultDisplay ?? null,
+          confirmationDetails: null,
+          correlationId: null,
+        }),
+      );
       pending.push({ type: 'tool_group', tools });
     }
     this.pending = pending;
@@ -210,7 +227,11 @@ export class ClaudeStateAccumulator {
     }
 
     const blockSummary = (content as any[])
-      .map((b: any) => (b.type as string) + (b.type === 'tool_use' ? `:${b.name as string}` : ''))
+      .map(
+        (b: any) =>
+          (b.type as string) +
+          (b.type === 'tool_use' ? `:${b.name as string}` : ''),
+      )
       .join(', ');
     log.debug('handleAssistantMessage', {
       uuid: msg.uuid,
@@ -221,7 +242,9 @@ export class ClaudeStateAccumulator {
 
     // Flush any streaming text into history
     if (this._streamingText) {
-      log.debug('flushing streaming text to history', { len: this._streamingText.length });
+      log.debug('flushing streaming text to history', {
+        len: this._streamingText.length,
+      });
       this.history.push({ type: 'gemini', text: this._streamingText });
       this._streamingText = '';
     }
@@ -232,8 +255,12 @@ export class ClaudeStateAccumulator {
       if (block.type === 'text' && block.text) {
         textParts.push(block.text as string);
       } else if (block.type === 'tool_use') {
-        const callId: string = (block.id as string) || `claude-tool-${++this._toolCallCounter}`;
-        const description = this._describeToolInput(block.name as string, block.input);
+        const callId: string =
+          (block.id as string) || `claude-tool-${++this._toolCallCounter}`;
+        const description = this._describeToolInput(
+          block.name as string,
+          block.input,
+        );
         const toolInfo: PendingToolUse = {
           callId,
           name: block.name as string,
@@ -243,20 +270,28 @@ export class ClaudeStateAccumulator {
           resultDisplay: null,
         };
         this._pendingToolUses.set(callId, toolInfo);
-        log.debug('tool_use registered', { callId, name: block.name, description });
+        log.debug('tool_use registered', {
+          callId,
+          name: block.name,
+          description,
+        });
       }
     }
 
     // If there was text, add to history (only if not already flushed from streaming)
     const fullText = textParts.join('');
-    if (fullText && !this.history.some(
-      (m) => m.type === 'gemini' && m.text === fullText,
-    )) {
+    if (
+      fullText &&
+      !this.history.some((m) => m.type === 'gemini' && m.text === fullText)
+    ) {
       this.history.push({ type: 'gemini', text: fullText });
     }
 
     // If there were tool uses, set state to tool
-    if (this._pendingToolUses.size > 0 && [...this._pendingToolUses.values()].some(t => t.status === 'running')) {
+    if (
+      this._pendingToolUses.size > 0 &&
+      [...this._pendingToolUses.values()].some((t) => t.status === 'running')
+    ) {
       this.streamingState = 'tool';
     }
 
@@ -323,15 +358,17 @@ export class ClaudeStateAccumulator {
       (t) => t.status === 'success' || t.status === 'error',
     );
     if (allDone && this._pendingToolUses.size > 0) {
-      const tools: ToolCallInfo[] = [...this._pendingToolUses.values()].map((t) => ({
-        callId: t.callId,
-        name: t.name,
-        description: t.description,
-        status: t.status,
-        resultDisplay: t.resultDisplay ?? null,
-        confirmationDetails: null,
-        correlationId: null,
-      }));
+      const tools: ToolCallInfo[] = [...this._pendingToolUses.values()].map(
+        (t) => ({
+          callId: t.callId,
+          name: t.name,
+          description: t.description,
+          status: t.status,
+          resultDisplay: t.resultDisplay ?? null,
+          confirmationDetails: null,
+          correlationId: null,
+        }),
+      );
       this.history.push({ type: 'tool_group', tools });
       this._pendingToolUses.clear();
     }
@@ -345,7 +382,8 @@ export class ClaudeStateAccumulator {
       num_turns: msg.num_turns,
       total_cost_usd: msg.total_cost_usd,
       duration_ms: msg.duration_ms,
-      result: typeof msg.result === 'string' ? msg.result.slice(0, 200) : undefined,
+      result:
+        typeof msg.result === 'string' ? msg.result.slice(0, 200) : undefined,
     });
     // Flush any remaining streaming text
     if (this._streamingText) {
@@ -354,15 +392,17 @@ export class ClaudeStateAccumulator {
     }
     // Flush any remaining tools
     if (this._pendingToolUses.size > 0) {
-      const tools: ToolCallInfo[] = [...this._pendingToolUses.values()].map((t) => ({
-        callId: t.callId,
-        name: t.name,
-        description: t.description,
-        status: t.status === 'running' ? 'error' : t.status,
-        resultDisplay: t.resultDisplay ?? null,
-        confirmationDetails: null,
-        correlationId: null,
-      }));
+      const tools: ToolCallInfo[] = [...this._pendingToolUses.values()].map(
+        (t) => ({
+          callId: t.callId,
+          name: t.name,
+          description: t.description,
+          status: t.status === 'running' ? 'error' : t.status,
+          resultDisplay: t.resultDisplay ?? null,
+          confirmationDetails: null,
+          correlationId: null,
+        }),
+      );
       this.history.push({ type: 'tool_group', tools });
       this._pendingToolUses.clear();
     }
@@ -375,16 +415,26 @@ export class ClaudeStateAccumulator {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  addToolConfirmation(callId: string, toolName: string, input: Record<string, unknown>, options: { decisionReason?: string }): void {
+  addToolConfirmation(
+    callId: string,
+    toolName: string,
+    input: Record<string, unknown>,
+    options: { decisionReason?: string },
+  ): void {
     const details: ConfirmationDetails = {
       type: toolName.includes('Bash') ? 'exec' : 'edit',
       title: options.decisionReason ?? `Use ${toolName}`,
       command: toolName === 'Bash' ? String(input['command'] ?? '') : undefined,
       toolDisplayName: toolName,
       toolName: toolName.toLowerCase(),
-      fileName: input['file_path'] ? String(input['file_path']).split('/').pop() : undefined,
+      fileName: input['file_path']
+        ? String(input['file_path']).split('/').pop()
+        : undefined,
       filePath: input['file_path'] ? String(input['file_path']) : undefined,
-      fileDiff: input['old_string'] != null ? `-${String(input['old_string'])}\n+${String(input['new_string'])}` : undefined,
+      fileDiff:
+        input['old_string'] != null
+          ? `-${String(input['old_string'])}\n+${String(input['new_string'])}`
+          : undefined,
     };
 
     const toolInfo: PendingToolUse = {
@@ -412,21 +462,26 @@ export class ClaudeStateAccumulator {
     this._updatePending();
   }
 
-  private _updatePendingWithConfirmation(details: ConfirmationDetails, callId: string): void {
+  private _updatePendingWithConfirmation(
+    details: ConfirmationDetails,
+    callId: string,
+  ): void {
     const pending: HistoryMessage[] = [];
     if (this._streamingText) {
       pending.push({ type: 'gemini', text: this._streamingText });
     }
     if (this._pendingToolUses.size > 0) {
-      const tools: ToolCallInfo[] = [...this._pendingToolUses.values()].map((t) => ({
-        callId: t.callId,
-        name: t.name,
-        description: t.description,
-        status: t.status,
-        resultDisplay: t.resultDisplay ?? null,
-        confirmationDetails: t.callId === callId ? details : null,
-        correlationId: null,
-      }));
+      const tools: ToolCallInfo[] = [...this._pendingToolUses.values()].map(
+        (t) => ({
+          callId: t.callId,
+          name: t.name,
+          description: t.description,
+          status: t.status,
+          resultDisplay: t.resultDisplay ?? null,
+          confirmationDetails: t.callId === callId ? details : null,
+          correlationId: null,
+        }),
+      );
       pending.push({ type: 'tool_group', tools });
     }
     this.pending = pending;
@@ -442,7 +497,9 @@ export class ClaudeStateAccumulator {
       case 'Read':
         return input.file_path ? `Read ${input.file_path as string}` : toolName;
       case 'Write':
-        return input.file_path ? `Write ${input.file_path as string}` : toolName;
+        return input.file_path
+          ? `Write ${input.file_path as string}`
+          : toolName;
       case 'Edit':
         return input.file_path ? `Edit ${input.file_path as string}` : toolName;
       case 'Glob':
@@ -452,9 +509,13 @@ export class ClaudeStateAccumulator {
       case 'WebSearch':
         return input.query ? `Search: ${input.query as string}` : toolName;
       case 'WebFetch':
-        return input.url ? `Fetch: ${String(input.url).slice(0, 80)}` : toolName;
+        return input.url
+          ? `Fetch: ${String(input.url).slice(0, 80)}`
+          : toolName;
       case 'Task':
-        return input.description ? `Task: ${input.description as string}` : toolName;
+        return input.description
+          ? `Task: ${input.description as string}`
+          : toolName;
       default:
         return toolName;
     }
@@ -467,20 +528,25 @@ export class ClaudeStateAccumulator {
 // ClaudeBridge — orchestrates a single Claude SDK instance
 // ---------------------------------------------------------------------------
 
-export type EmitUpdateFn = (snapshot: { type: 'bridge:update'; payload: BridgeUpdatePayload }) => void;
+export type EmitUpdateFn = (snapshot: {
+  type: 'bridge:update';
+  payload: BridgeUpdatePayload;
+}) => void;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-type PermissionResult = {
-  behavior: 'allow';
-  updatedInput?: Record<string, unknown>;
-  updatedPermissions?: any[];
-  toolUseID?: string;
-} | {
-  behavior: 'deny';
-  message: string;
-  interrupt?: boolean;
-  toolUseID?: string;
-};
+type PermissionResult =
+  | {
+      behavior: 'allow';
+      updatedInput?: Record<string, unknown>;
+      updatedPermissions?: any[];
+      toolUseID?: string;
+    }
+  | {
+      behavior: 'deny';
+      message: string;
+      interrupt?: boolean;
+      toolUseID?: string;
+    };
 
 interface PendingConfirmation {
   resolve: (result: PermissionResult) => void;
@@ -500,7 +566,10 @@ export class ClaudeBridge implements Provider {
   private _emitUpdate: EmitUpdateFn;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private _query: any = null;
-  private _inputQueue: AsyncPushQueue<{ type: 'user'; message: { role: 'user'; content: Array<{ type: 'text'; text: string }> } }> | null = null;
+  private _inputQueue: AsyncPushQueue<{
+    type: 'user';
+    message: { role: 'user'; content: Array<{ type: 'text'; text: string }> };
+  }> | null = null;
   private _sessionId: string | null = null;
   private _abortController = new AbortController();
   private _processing = false;
@@ -509,16 +578,27 @@ export class ClaudeBridge implements Provider {
   private _yolo: boolean;
   private _pendingConfirmations = new Map<string, PendingConfirmation>();
 
-  constructor(opts: { instanceId: string; projectPath: string; emitUpdate: EmitUpdateFn; yolo?: boolean }) {
+  constructor(opts: {
+    instanceId: string;
+    projectPath: string;
+    emitUpdate: EmitUpdateFn;
+    yolo?: boolean;
+  }) {
     this.instanceId = opts.instanceId;
     this.projectPath = opts.projectPath;
     this._emitUpdate = opts.emitUpdate;
     this._yolo = opts.yolo ?? false;
-    this.accumulator = new ClaudeStateAccumulator(opts.instanceId, opts.projectPath);
+    this.accumulator = new ClaudeStateAccumulator(
+      opts.instanceId,
+      opts.projectPath,
+    );
   }
 
   async start(): Promise<void> {
-    log.debug('start()', { instanceId: this.instanceId, projectPath: this.projectPath });
+    log.debug('start()', {
+      instanceId: this.instanceId,
+      projectPath: this.projectPath,
+    });
     try {
       const sdk = await import('@anthropic-ai/claude-agent-sdk');
       this._queryFn = sdk.query;
@@ -581,7 +661,10 @@ export class ClaudeBridge implements Provider {
         options['resume'] = this._sessionId;
       }
 
-      log.debug('creating new query', { cwd: options['cwd'], resume: this._sessionId ?? null });
+      log.debug('creating new query', {
+        cwd: options['cwd'],
+        resume: this._sessionId ?? null,
+      });
       this._query = this._queryFn({
         prompt: this._inputQueue,
         options,
@@ -614,7 +697,10 @@ export class ClaudeBridge implements Provider {
         log.debug('interrupt succeeded', { instanceId: this.instanceId });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        log.debug('interrupt error', { error: msg, instanceId: this.instanceId });
+        log.debug('interrupt error', {
+          error: msg,
+          instanceId: this.instanceId,
+        });
       }
     } else {
       log.debug('interrupt: no active query to interrupt');
@@ -622,7 +708,11 @@ export class ClaudeBridge implements Provider {
   }
 
   async setModel(model: string): Promise<void> {
-    log.debug('setModel()', { instanceId: this.instanceId, model, hasQuery: !!this._query });
+    log.debug('setModel()', {
+      instanceId: this.instanceId,
+      model,
+      hasQuery: !!this._query,
+    });
     if (this._query) {
       try {
         await this._query.setModel(model);
@@ -641,7 +731,11 @@ export class ClaudeBridge implements Provider {
     }
   }
 
-  async confirm(callId: string, outcome: string, _correlationId?: string): Promise<void> {
+  async confirm(
+    callId: string,
+    outcome: string,
+    _correlationId?: string,
+  ): Promise<void> {
     const pending = this._pendingConfirmations.get(callId);
     if (!pending) {
       log.debug('confirm: no pending confirmation found', { callId });
@@ -653,7 +747,11 @@ export class ClaudeBridge implements Provider {
 
     if (outcome === 'cancel') {
       this.accumulator.resolveToolConfirmation(callId, false);
-      pending.resolve({ behavior: 'deny', message: 'User denied', toolUseID: pending.toolUseID });
+      pending.resolve({
+        behavior: 'deny',
+        message: 'User denied',
+        toolUseID: pending.toolUseID,
+      });
     } else if (outcome === 'proceed_always') {
       this.accumulator.resolveToolConfirmation(callId, true);
       pending.resolve({
@@ -664,7 +762,11 @@ export class ClaudeBridge implements Provider {
       });
     } else {
       this.accumulator.resolveToolConfirmation(callId, true);
-      pending.resolve({ behavior: 'allow', updatedInput: pending.input, toolUseID: pending.toolUseID });
+      pending.resolve({
+        behavior: 'allow',
+        updatedInput: pending.input,
+        toolUseID: pending.toolUseID,
+      });
     }
     this._emit();
   }
@@ -679,7 +781,11 @@ export class ClaudeBridge implements Provider {
     });
     // Reject pending confirmations
     for (const [, pending] of this._pendingConfirmations) {
-      pending.resolve({ behavior: 'deny', message: 'Session terminated', toolUseID: pending.toolUseID });
+      pending.resolve({
+        behavior: 'deny',
+        message: 'Session terminated',
+        toolUseID: pending.toolUseID,
+      });
     }
     this._pendingConfirmations.clear();
     if (this._inputQueue) {
@@ -705,7 +811,13 @@ export class ClaudeBridge implements Provider {
         models: models?.map((m: { value: string }) => m.value),
       });
       if (models && (models as unknown[]).length > 0) {
-        this.accumulator.setModels(models as Array<{ value: string; displayName: string; description?: string }>);
+        this.accumulator.setModels(
+          models as Array<{
+            value: string;
+            displayName: string;
+            description?: string;
+          }>,
+        );
         this._emit();
       }
     } catch (err: unknown) {
@@ -724,9 +836,15 @@ export class ClaudeBridge implements Provider {
     try {
       for await (const message of this._query) {
         msgCount++;
-        const msgMeta: Record<string, unknown> = { n: msgCount, type: (message as { type: string }).type };
+        const msgMeta: Record<string, unknown> = {
+          n: msgCount,
+          type: (message as { type: string }).type,
+        };
         const msg = message as Record<string, unknown>;
-        if (msg['type'] === 'stream_event') msgMeta['event'] = (msg['event'] as Record<string, unknown> | undefined)?.['type'];
+        if (msg['type'] === 'stream_event')
+          msgMeta['event'] = (
+            msg['event'] as Record<string, unknown> | undefined
+          )?.['type'];
         if (msg['uuid']) msgMeta['uuid'] = msg['uuid'];
         if (msg['session_id']) msgMeta['session_id'] = msg['session_id'];
         log.debug('SDK message received', msgMeta);
@@ -764,7 +882,10 @@ export class ClaudeBridge implements Provider {
           case 'system':
             log.debug('SDK system message', {
               subtype: msg['subtype'],
-              text: typeof msg['text'] === 'string' ? (msg['text'] as string).slice(0, 200) : undefined,
+              text:
+                typeof msg['text'] === 'string'
+                  ? (msg['text'] as string).slice(0, 200)
+                  : undefined,
             });
             break;
 
@@ -776,14 +897,26 @@ export class ClaudeBridge implements Provider {
             break;
         }
       }
-      log.debug('_processMessages loop ended normally', { totalMessages: msgCount });
+      log.debug('_processMessages loop ended normally', {
+        totalMessages: msgCount,
+      });
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') {
-        log.debug('Query aborted', { instanceId: this.instanceId, messagesProcessed: msgCount });
+        log.debug('Query aborted', {
+          instanceId: this.instanceId,
+          messagesProcessed: msgCount,
+        });
       } else {
         const errMsg = err instanceof Error ? err.message : String(err);
-        const stack = err instanceof Error ? err.stack?.split('\n').slice(0, 3).join(' | ') : undefined;
-        log.debug('Query error', { error: errMsg, stack, messagesProcessed: msgCount });
+        const stack =
+          err instanceof Error
+            ? err.stack?.split('\n').slice(0, 3).join(' | ')
+            : undefined;
+        log.debug('Query error', {
+          error: errMsg,
+          stack,
+          messagesProcessed: msgCount,
+        });
       }
       this.accumulator.handleResult({ subtype: 'error' });
       this._emit();
@@ -791,7 +924,10 @@ export class ClaudeBridge implements Provider {
       this._processing = false;
       this._query = null;
       this._inputQueue = null;
-      log.debug('_processMessages finished', { instanceId: this.instanceId, totalMessages: msgCount });
+      log.debug('_processMessages finished', {
+        instanceId: this.instanceId,
+        totalMessages: msgCount,
+      });
     }
   }
 
@@ -799,10 +935,19 @@ export class ClaudeBridge implements Provider {
   private async _canUseTool(
     toolName: string,
     input: Record<string, unknown>,
-    options: { signal: AbortSignal; suggestions?: any[]; decisionReason?: string; toolUseID: string },
+    options: {
+      signal: AbortSignal;
+      suggestions?: any[];
+      decisionReason?: string;
+      toolUseID: string;
+    },
   ): Promise<PermissionResult> {
     const callId = options.toolUseID;
-    log.debug('canUseTool', { toolName, callId, decisionReason: options.decisionReason });
+    log.debug('canUseTool', {
+      toolName,
+      callId,
+      decisionReason: options.decisionReason,
+    });
 
     // Emit a confirmation request to the iOS app via the accumulator
     this.accumulator.addToolConfirmation(callId, toolName, input, options);
@@ -822,14 +967,16 @@ export class ClaudeBridge implements Provider {
   private _emit(): void {
     const snapshot = this.accumulator.snapshot();
     const event = { type: 'bridge:update' as const, payload: snapshot };
-    log.trace(JSON.stringify({
-      instanceId: this.instanceId,
-      streamingState: snapshot.streamingState,
-      historyLen: snapshot.history.length,
-      pendingLen: snapshot.pending.length,
-      currentModel: snapshot.currentModel,
-      availableModelsCount: snapshot.availableModels.length,
-    }));
+    log.trace(
+      JSON.stringify({
+        instanceId: this.instanceId,
+        streamingState: snapshot.streamingState,
+        historyLen: snapshot.history.length,
+        pendingLen: snapshot.pending.length,
+        currentModel: snapshot.currentModel,
+        availableModelsCount: snapshot.availableModels.length,
+      }),
+    );
     this._emitUpdate(event);
   }
 }

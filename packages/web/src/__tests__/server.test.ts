@@ -167,19 +167,23 @@ describe('Gemini Provider (mock CLI)', () => {
 
   it('mock CLI connects via WS and sends bridge:update → status becomes connected', async () => {
     // Give the server a moment to register the instance
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 100));
 
     mockCli = new MockCliClient();
     await mockCli.connect(t.port, instanceId, '/tmp');
     await mockCli.ready();
 
     // Wait a bit for the bridge:update to propagate
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 200));
 
     // Check via SSE that instance is connected
     const events = await collectSseEvents(t.baseUrl, sessionId, 500);
-    const sessionState = events.find((e) => e.type === 'session_state') as Record<string, unknown> | undefined;
-    const instances = sessionState?.['instances'] as Array<Record<string, unknown>> | undefined;
+    const sessionState = events.find((e) => e.type === 'session_state') as
+      | Record<string, unknown>
+      | undefined;
+    const instances = sessionState?.['instances'] as
+      | Array<Record<string, unknown>>
+      | undefined;
     const inst = instances?.find((i) => i['id'] === instanceId);
     expect(inst?.['status']).toBe('connected');
     expect(inst?.['provider']).toBe('gemini');
@@ -198,7 +202,7 @@ describe('Gemini Provider (mock CLI)', () => {
     expect(r.json?.['ok']).toBe(true);
 
     // Wait for WS message
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 100));
     const submit = received.find((m) => m['type'] === 'submit');
     expect(submit).toBeDefined();
     expect(submit?.['text']).toBe('hello world');
@@ -215,7 +219,7 @@ describe('Gemini Provider (mock CLI)', () => {
     });
     expect(r.status).toBe(200);
 
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 100));
     const setModel = received.find((m) => m['type'] === 'setModel');
     expect(setModel).toBeDefined();
     expect(setModel?.['model']).toBe('gemini-2.0-flash');
@@ -233,7 +237,7 @@ describe('Gemini Provider (mock CLI)', () => {
     });
     expect(r.status).toBe(200);
 
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise((r) => setTimeout(r, 100));
     const confirm = received.find((m) => m['type'] === 'confirm');
     expect(confirm).toBeDefined();
     expect(confirm?.['callId']).toBe('call-123');
@@ -241,21 +245,33 @@ describe('Gemini Provider (mock CLI)', () => {
 
   it('bridge:update from CLI arrives via SSE', async () => {
     // Send a bridge:update with history
-    mockCli.sendUpdate(instanceId, '/tmp', 'responding', [
-      { type: 'user', text: 'hello' },
-      { type: 'gemini', text: 'world' },
-    ], []);
+    mockCli.sendUpdate(
+      instanceId,
+      '/tmp',
+      'responding',
+      [
+        { type: 'user', text: 'hello' },
+        { type: 'gemini', text: 'world' },
+      ],
+      [],
+    );
 
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 200));
 
     const events = await collectSseEvents(t.baseUrl, sessionId, 500);
     // session_state snapshot should contain the update
-    const state = events.find((e) => e.type === 'session_state') as Record<string, unknown> | undefined;
-    const snapshots = state?.['snapshots'] as Array<Record<string, unknown>> | undefined;
+    const state = events.find((e) => e.type === 'session_state') as
+      | Record<string, unknown>
+      | undefined;
+    const snapshots = state?.['snapshots'] as
+      | Array<Record<string, unknown>>
+      | undefined;
     const snap = snapshots?.find((s) => s['instanceId'] === instanceId);
     expect(snap).toBeDefined();
     // The snapshot should have the history we sent
-    const history = snap?.['history'] as Array<Record<string, unknown>> | undefined;
+    const history = snap?.['history'] as
+      | Array<Record<string, unknown>>
+      | undefined;
     expect(history?.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -276,12 +292,16 @@ describe('Gemini Provider (mock CLI)', () => {
     expect(r.status).toBe(200);
     expect(r.json?.['ok']).toBe(true);
 
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 200));
 
     // Verify it's gone
     const events = await collectSseEvents(t.baseUrl, sessionId, 500);
-    const state = events.find((e) => e.type === 'session_state') as Record<string, unknown> | undefined;
-    const instances = state?.['instances'] as Array<Record<string, unknown>> | undefined;
+    const state = events.find((e) => e.type === 'session_state') as
+      | Record<string, unknown>
+      | undefined;
+    const instances = state?.['instances'] as
+      | Array<Record<string, unknown>>
+      | undefined;
     const inst = instances?.find((i) => i['id'] === instanceId);
     expect(inst).toBeUndefined();
   });

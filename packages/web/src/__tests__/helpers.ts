@@ -13,7 +13,9 @@ export interface TestServer {
   cleanup: () => Promise<void>;
 }
 
-export async function startTestServer(configOverrides?: Partial<ServerConfig>): Promise<TestServer> {
+export async function startTestServer(
+  configOverrides?: Partial<ServerConfig>,
+): Promise<TestServer> {
   const config: ServerConfig = {
     port: 0, // random port
     wsPath: '/ws',
@@ -37,7 +39,11 @@ export async function startTestServer(configOverrides?: Partial<ServerConfig>): 
 }
 
 /** POST JSON to a URL. */
-export async function post(baseUrl: string, path: string, body: unknown): Promise<{ status: number; json: Record<string, unknown> | null }> {
+export async function post(
+  baseUrl: string,
+  path: string,
+  body: unknown,
+): Promise<{ status: number; json: Record<string, unknown> | null }> {
   const res = await fetch(`${baseUrl}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -45,16 +51,27 @@ export async function post(baseUrl: string, path: string, body: unknown): Promis
   });
   const text = await res.text();
   let json: Record<string, unknown> | null = null;
-  try { json = JSON.parse(text) as Record<string, unknown>; } catch { /* ignore */ }
+  try {
+    json = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    /* ignore */
+  }
   return { status: res.status, json };
 }
 
 /** GET a URL. */
-export async function get(baseUrl: string, path: string): Promise<{ status: number; json: Record<string, unknown> | null }> {
+export async function get(
+  baseUrl: string,
+  path: string,
+): Promise<{ status: number; json: Record<string, unknown> | null }> {
   const res = await fetch(`${baseUrl}${path}`);
   const text = await res.text();
   let json: Record<string, unknown> | null = null;
-  try { json = JSON.parse(text) as Record<string, unknown>; } catch { /* ignore */ }
+  try {
+    json = JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    /* ignore */
+  }
   return { status: res.status, json };
 }
 
@@ -64,7 +81,11 @@ export interface SseEvent {
 }
 
 /** Collect SSE events for a given duration. */
-export async function collectSseEvents(baseUrl: string, sessionId: string, durationMs: number): Promise<SseEvent[]> {
+export async function collectSseEvents(
+  baseUrl: string,
+  sessionId: string,
+  durationMs: number,
+): Promise<SseEvent[]> {
   const controller = new AbortController();
   const events: SseEvent[] = [];
   const timeout = setTimeout(() => controller.abort(), durationMs);
@@ -87,7 +108,9 @@ export async function collectSseEvents(baseUrl: string, sessionId: string, durat
         if (line.startsWith('data: ')) {
           try {
             events.push(JSON.parse(line.slice(6)) as SseEvent);
-          } catch { /* ignore */ }
+          } catch {
+            /* ignore */
+          }
         }
       }
     }
@@ -110,10 +133,16 @@ export class MockCliClient {
   private _resolveReady!: () => void;
 
   constructor() {
-    this._ready = new Promise(resolve => { this._resolveReady = resolve; });
+    this._ready = new Promise((resolve) => {
+      this._resolveReady = resolve;
+    });
   }
 
-  async connect(port: number, instanceId: string, projectPath: string): Promise<void> {
+  async connect(
+    port: number,
+    instanceId: string,
+    projectPath: string,
+  ): Promise<void> {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
       this.ws.on('open', () => {
@@ -144,7 +173,14 @@ export class MockCliClient {
       streamingState: streamingState as BridgeUpdatePayload['streamingState'],
       isTrustedFolder: true,
       currentModel: 'gemini-2.0-flash',
-      availableModels: [{ value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', description: null, isAuto: false }],
+      availableModels: [
+        {
+          value: 'gemini-2.0-flash',
+          label: 'Gemini 2.0 Flash',
+          description: null,
+          isAuto: false,
+        },
+      ],
       hasPreviewAccess: false,
     };
     this.ws.send(JSON.stringify({ type: 'bridge:update', payload }));
@@ -160,7 +196,9 @@ export class MockCliClient {
     this.ws?.on('message', (raw: Buffer | string) => {
       try {
         handler(JSON.parse(raw.toString()) as Record<string, unknown>);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     });
   }
 

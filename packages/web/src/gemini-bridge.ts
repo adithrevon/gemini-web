@@ -17,13 +17,18 @@ interface PtyProcess {
   kill(): void;
   destroy?(): void;
   onData(callback: (data: string) => void): void;
-  onExit(callback: (event: { exitCode: number; signal?: number }) => void): void;
+  onExit(
+    callback: (event: { exitCode: number; signal?: number }) => void,
+  ): void;
 }
 
 type ProcessHandle = PtyProcess | ChildProcess;
 
 export type GeminiBridgeCallbacks = {
-  onStatusChange: (status: 'connecting' | 'connected' | 'disconnected' | 'error', error?: string) => void;
+  onStatusChange: (
+    status: 'connecting' | 'connected' | 'disconnected' | 'error',
+    error?: string,
+  ) => void;
   onBridgeUpdate: (payload: BridgeUpdatePayload) => void;
   onExit: () => void;
   onError: (message: string) => void;
@@ -41,7 +46,8 @@ export class GeminiBridge implements Provider {
   private _cliSocket: WebSocket | null = null;
   private _lastSnapshot: BridgeUpdatePayload | null = null;
   private _spawnTimeout: ReturnType<typeof setTimeout> | null = null;
-  private _status: 'connecting' | 'connected' | 'disconnected' | 'error' = 'connecting';
+  private _status: 'connecting' | 'connected' | 'disconnected' | 'error' =
+    'connecting';
   private _outputBuffer: string[] = [];
   private readonly _bufferLimit = 20000;
   private _yolo: boolean;
@@ -74,7 +80,7 @@ export class GeminiBridge implements Provider {
 
     const wsUrl = `ws://127.0.0.1:${this._config.port}${this._config.wsPath}`;
     const env: Record<string, string> = {
-      ...process.env as Record<string, string>,
+      ...(process.env as Record<string, string>),
       GEMINI_WEB_WS_URL: wsUrl,
       GEMINI_INSTANCE_ID: this.instanceId,
     };
@@ -132,8 +138,12 @@ export class GeminiBridge implements Provider {
         child.stdout?.on('data', (data: Buffer) => process.stdout.write(data));
         child.stderr?.on('data', (data: Buffer) => process.stderr.write(data));
       }
-      child.stdout?.on('data', (data: Buffer) => this._recordOutput(data.toString('utf8')));
-      child.stderr?.on('data', (data: Buffer) => this._recordOutput(data.toString('utf8')));
+      child.stdout?.on('data', (data: Buffer) =>
+        this._recordOutput(data.toString('utf8')),
+      );
+      child.stderr?.on('data', (data: Buffer) =>
+        this._recordOutput(data.toString('utf8')),
+      );
 
       child.on('exit', (code: number | null) => {
         console.log(
@@ -220,11 +230,18 @@ export class GeminiBridge implements Provider {
     safeSend(this._cliSocket, JSON.stringify({ type: 'setModel', model }));
   }
 
-  async confirm(callId: string, outcome: string, correlationId?: string): Promise<void> {
+  async confirm(
+    callId: string,
+    outcome: string,
+    correlationId?: string,
+  ): Promise<void> {
     if (!isSocketOpen(this._cliSocket)) {
       throw new Error('CLI not connected');
     }
-    safeSend(this._cliSocket, JSON.stringify({ type: 'confirm', callId, outcome, correlationId }));
+    safeSend(
+      this._cliSocket,
+      JSON.stringify({ type: 'confirm', callId, outcome, correlationId }),
+    );
   }
 
   destroy(): void {
@@ -238,27 +255,40 @@ export class GeminiBridge implements Provider {
     }
     if (this._process) {
       if ('kill' in this._process && typeof this._process.kill === 'function') {
-        try { this._process.kill(); } catch { /* ignore */ }
+        try {
+          this._process.kill();
+        } catch {
+          /* ignore */
+        }
       }
-      if ('destroy' in this._process && typeof this._process.destroy === 'function') {
-        try { (this._process as PtyProcess).destroy!(); } catch { /* ignore */ }
+      if (
+        'destroy' in this._process &&
+        typeof this._process.destroy === 'function'
+      ) {
+        try {
+          (this._process as PtyProcess).destroy!();
+        } catch {
+          /* ignore */
+        }
       }
       this._process = null;
     }
   }
 
   getSnapshot(): BridgeUpdatePayload {
-    return this._lastSnapshot ?? {
-      instanceId: this.instanceId,
-      projectPath: this.projectPath,
-      history: [],
-      pending: [],
-      streamingState: 'idle',
-      isTrustedFolder: true,
-      currentModel: '',
-      availableModels: [],
-      hasPreviewAccess: false,
-    };
+    return (
+      this._lastSnapshot ?? {
+        instanceId: this.instanceId,
+        projectPath: this.projectPath,
+        history: [],
+        pending: [],
+        streamingState: 'idle',
+        isTrustedFolder: true,
+        currentModel: '',
+        availableModels: [],
+        hasPreviewAccess: false,
+      }
+    );
   }
 
   /** Check if the CLI socket is connected. */
