@@ -76,6 +76,7 @@ export interface ConfirmationDetails {
 
 export interface BridgeUpdatePayload {
   instanceId: string;
+  sessionId?: string;  // Gemini session ID from CLI (for resume)
   projectPath: string;
   history: HistoryMessage[];
   pending: HistoryMessage[];
@@ -237,4 +238,34 @@ export interface PathValidation {
   name: string;
   isProject: boolean;
   error?: string;
+}
+
+// --- Session Persistence ---
+
+export interface PersistedInstance {
+  id: string;
+  sessionId: string | null;
+  provider: ProviderName;
+  providerName: ProviderName;
+  projectPath: string;
+  status: InstanceStatus;
+  error: string | null;
+  lastSnapshot: BridgeUpdatePayload | null;
+
+  // Provider-specific resume data
+  claudeSessionId?: string;  // For Claude SDK resume
+  geminiSessionId?: string;  // For Gemini CLI --resume
+}
+
+export interface PersistedSession {
+  id: string;
+  activeInstanceId: string | null;
+  lastSeenAt: number;
+  instances: PersistedInstance[];
+}
+
+export interface PersistedData {
+  version: 1;
+  lastUpdated: string;
+  sessions: PersistedSession[];
 }

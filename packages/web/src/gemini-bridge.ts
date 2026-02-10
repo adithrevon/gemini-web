@@ -51,6 +51,8 @@ export class GeminiBridge implements Provider {
   private _outputBuffer: string[] = [];
   private readonly _bufferLimit = 20000;
   private _yolo: boolean;
+  private _resumeSessionId?: string;
+  private _geminiSessionId?: string;
 
   constructor(opts: {
     instanceId: string;
@@ -58,12 +60,14 @@ export class GeminiBridge implements Provider {
     config: ServerConfig;
     callbacks: GeminiBridgeCallbacks;
     yolo?: boolean;
+    resumeSessionId?: string;
   }) {
     this.instanceId = opts.instanceId;
     this.projectPath = opts.projectPath;
     this._config = opts.config;
     this._callbacks = opts.callbacks;
     this._yolo = opts.yolo ?? false;
+    this._resumeSessionId = opts.resumeSessionId;
   }
 
   async start(): Promise<void> {
@@ -77,6 +81,15 @@ export class GeminiBridge implements Provider {
       ? process.env['GEMINI_WEB_CLI_ARGS'].split(' ')
       : [];
     if (this._yolo) cliArgs.push('--yolo');
+
+    // Add --resume flag if restoring from persisted session
+    if (this._resumeSessionId) {
+      cliArgs.push('--resume', this._resumeSessionId);
+      log.debug('resuming gemini session', {
+        instanceId: this.instanceId,
+        sessionId: this._resumeSessionId,
+      });
+    }
 
     const wsUrl = `ws://127.0.0.1:${this._config.port}${this._config.wsPath}`;
     const env: Record<string, string> = {
@@ -186,6 +199,12 @@ export class GeminiBridge implements Provider {
       // projectPath may be updated by the CLI
       (this as { projectPath: string }).projectPath = payload.projectPath;
     }
+
+    // Store Gemini session ID if provided by the CLI
+    if (payload.sessionId) {
+      this._geminiSessionId = payload.sessionId;
+    }
+
     this._callbacks.onBridgeUpdate(payload);
   }
 
@@ -302,6 +321,10 @@ export class GeminiBridge implements Provider {
 
   get status(): string {
     return this._status;
+  }
+
+  get geminiSessionId(): string | undefined {
+    return this._geminiSessionId;
   }
 
   private _scheduleSpawnTimeout(): void {

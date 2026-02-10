@@ -5,10 +5,12 @@ struct NewChatView: View {
     let initialProject: String?
     let initialProvider: Provider
     let composerDisabled: Bool
+    let connected: Bool
     let status: InstanceStatus?
     let onProjectSelected: (String, Provider, Bool, String) -> Void  // path, provider, yolo, model
     let onSubmitMessage: (String) -> Void
     let onCancel: (() -> Void)?
+    let onOpenSettings: () -> Void
     let sessionStore: SessionStore
 
     @State private var selectedProject: String = ""
@@ -29,9 +31,13 @@ struct NewChatView: View {
             VStack(spacing: Spacing.lg) {
                 Spacer()
 
-                // Animated icon
+                // Animated icon (or offline icon)
                 ZStack {
-                    if isConnecting {
+                    if !connected {
+                        Image(systemName: "wifi.exclamationmark")
+                            .font(.system(size: 48))
+                            .foregroundStyle(Color.statusError.gradient)
+                    } else if isConnecting {
                         ConnectionAnimationView()
                     } else {
                         Image(systemName: selectedProvider.icon)
@@ -41,72 +47,102 @@ struct NewChatView: View {
                 }
                 .frame(height: 80)
 
-                Text(isConnecting ? "Connecting..." : "Let's build")
+                Text(!connected ? "Server Offline" : (isConnecting ? "Connecting..." : "Let's build"))
                     .font(.heroTitle)
                     .animation(.easeInOut, value: isConnecting)
+                    .animation(.easeInOut, value: connected)
 
-                // Provider picker
-                Picker("Provider", selection: $selectedProvider) {
-                    ForEach(Provider.allCases, id: \.self) { provider in
-                        Label(provider.displayName, systemImage: provider.icon)
-                            .tag(provider)
+                if !connected {
+                    // Offline message with Settings button
+                    VStack(spacing: Spacing.sm) {
+                        Text("Cannot connect to backend server")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+
+                        Button(action: onOpenSettings) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "gear")
+                                    .font(.caption.weight(.medium))
+                                Text("Open Settings")
+                                    .font(.caption.weight(.medium))
+                            }
+                            .padding(.horizontal, Spacing.md)
+                            .padding(.vertical, 6)
+                            .background(Color.accentColor)
+                            .foregroundColor(.white)
+                            .cornerRadius(CornerRadius.small)
+                        }
+                        .buttonStyle(.plain)
                     }
+                    .frame(maxWidth: 260)
+                } else {
+                    // Provider picker
+                    Picker("Provider", selection: $selectedProvider) {
+                        ForEach(Provider.allCases, id: \.self) { provider in
+                            Label(provider.displayName, systemImage: provider.icon)
+                                .tag(provider)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 260)
+                    .disabled(!connected)
+                    .onChange(of: selectedProvider) { _, newProvider in
+                        // Update model to provider default
+                        selectedModel = newProvider.defaultModel
+                        // When provider changes and a project is already selected,
+                        // re-spawn with the new provider
+                        if !selectedProject.isEmpty {
+                            onProjectSelected(selectedProject, newProvider, sudoMode, selectedModel)
+                        }
+                    }
+
+                    Toggle(isOn: $sudoMode) {
+                        Label("Sudo", systemImage: "bolt.shield")
+                            .font(.subheadline)
+                    }
+                    .toggleStyle(.switch)
+                    .frame(maxWidth: 260)
+                    .disabled(!connected)
+
+                    ModelSelectorView(
+                        currentModel: selectedModel,
+                        availableModels: selectedProvider.defaultModels,
+                        disabled: isConnecting,
+                        onSelect: { model in
+                            selectedModel = model
+                        }
+                    )
+                    .opacity(connected ? 1.0 : 0.5)
+
+                    ProjectSelectorView(
+                        selectedProject: $selectedProject,
+                        recentProjects: recentProjects,
+                        disabled: isConnecting || !connected,
+                        onSelect: { path in
+                            onProjectSelected(path, selectedProvider, sudoMode, selectedModel)
+                        },
+                        onBrowse: {
+                            showBrowser = true
+                        }
+                    )
+                    .frame(maxWidth: 400)
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 260)
-                .onChange(of: selectedProvider) { _, newProvider in
-                    // Update model to provider default
-                    selectedModel = newProvider.defaultModel
-                    // When provider changes and a project is already selected,
-                    // re-spawn with the new provider
-                    if !selectedProject.isEmpty {
-                        onProjectSelected(selectedProject, newProvider, sudoMode, selectedModel)
-                    }
-                }
-
-                Toggle(isOn: $sudoMode) {
-                    Label("Sudo", systemImage: "bolt.shield")
-                        .font(.subheadline)
-                }
-                .toggleStyle(.switch)
-                .frame(maxWidth: 260)
-
-                ModelSelectorView(
-                    currentModel: selectedModel,
-                    availableModels: selectedProvider.defaultModels,
-                    disabled: isConnecting,
-                    onSelect: { model in
-                        selectedModel = model
-                    }
-                )
-
-                ProjectSelectorView(
-                    selectedProject: $selectedProject,
-                    recentProjects: recentProjects,
-                    disabled: isConnecting,
-                    onSelect: { path in
-                        onProjectSelected(path, selectedProvider, sudoMode, selectedModel)
-                    },
-                    onBrowse: {
-                        showBrowser = true
-                    }
-                )
-                .frame(maxWidth: 400)
 
                 Spacer()
             }
             .padding(.horizontal, Spacing.lg)
 
-            // ComposerView at bottom - same as existing conversation
-            ComposerView(
-                disabled: composerDisabled || selectedProject.isEmpty,
-                streamingState: .idle,
-                onSubmit: { text in
-                    didSendMessage = true
-                    onSubmitMessage(text)
-                },
-                onInterrupt: nil
-            )
+          ComposerView(
+            disabled: composerDisabled || selectedProject.isEmpty,
+            streaming: false,
+            maxLines: 4,
+            onSubmit: { text in
+              didSendMessage = true
+              onSubmitMessage(text)
+          },
+            onInterrupt: nil
+          )
         }
         .onAppear {
             guard !hasInitialized else { return }
@@ -196,10 +232,12 @@ struct ConnectionAnimationView: View {
         initialProject: nil,
         initialProvider: .gemini,
         composerDisabled: false,
+        connected: false,
         status: .connecting,
         onProjectSelected: { _, _, _, _ in },
         onSubmitMessage: { _ in },
         onCancel: nil,
+        onOpenSettings: { },
         sessionStore: store
     )
 }

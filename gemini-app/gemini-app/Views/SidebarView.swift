@@ -3,10 +3,12 @@ import SwiftUI
 struct SidebarView: View {
     let instances: [InstanceState]
     let activeInstanceId: String?
+    let connected: Bool
     let onSelectInstance: (String) -> Void
     let onNewChat: (String) -> Void
     let onNewProject: () -> Void
     let onTerminate: (String) -> Void
+    let onOpenSettings: () -> Void
 
     private var groupedInstances: [String: [InstanceState]] {
         Dictionary(grouping: instances) { $0.projectPath }
@@ -14,14 +16,24 @@ struct SidebarView: View {
 
     var body: some View {
         List {
-            // New project button
-            Button {
-                onNewProject()
-            } label: {
-                Label("New Project", systemImage: "plus.circle.fill")
-                    .foregroundStyle(Color.accentColor)
+            // Offline banner
+            if !connected {
+                OfflineBannerView(onOpenSettings: onOpenSettings)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
             }
-            .buttonStyle(.plain)
+
+            // New project button (only when connected)
+            if connected {
+                Button {
+                    onNewProject()
+                } label: {
+                    Label("New Project", systemImage: "plus.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
+            }
 
             // Grouped instances by project
             ForEach(groupedInstances.keys.sorted(), id: \.self) { projectPath in
@@ -197,10 +209,12 @@ struct InstanceRowView: View {
                 )
             ],
             activeInstanceId: "1",
+            connected: false,
             onSelectInstance: { _ in },
             onNewChat: { _ in },
             onNewProject: { },
-            onTerminate: { _ in }
+            onTerminate: { _ in },
+            onOpenSettings: { }
         )
     }
 }

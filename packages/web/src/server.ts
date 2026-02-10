@@ -2,7 +2,7 @@ import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, statSync, existsSync, mkdirSync } from 'node:fs';
 import { WebSocketServer, WebSocket } from 'ws';
 
 import type { Provider } from './provider.js';
@@ -13,6 +13,9 @@ import type {
   BridgeUpdatePayload,
   SessionInstanceInfo,
   SseEvent,
+  PersistedData,
+  PersistedSession,
+  PersistedInstance,
 } from './types.js';
 import { GeminiBridge } from './gemini-bridge.js';
 import { ClaudeBridge } from './claude-bridge.js';
@@ -24,6 +27,7 @@ import {
   resolveProjectPath,
 } from './utils.js';
 import { log, logInfo, logCommand, fileLog, logFilePath } from './logger.js';
+import { SessionPersistence } from './persistence.js';
 
 // --- Internal types ---
 
@@ -54,9 +58,18 @@ export class GeminiWebServer {
   private instances = new Map<string, Instance>();
   private httpServer: http.Server;
   private wss: WebSocketServer;
+  private persistence: SessionPersistence;
 
   constructor(config: ServerConfig) {
     this.config = config;
+
+    // Initialize persistence
+    const persistDir = path.join(os.homedir(), '.gemini-web');
+    if (!existsSync(persistDir)) {
+      mkdirSync(persistDir, { recursive: true });
+    }
+    const persistFile = path.join(persistDir, 'sessions.json');
+    this.persistence = new SessionPersistence(persistFile);
     this.httpServer = http.createServer((req, res) => {
       void this._handleRequest(req, res);
     });
@@ -67,8 +80,12 @@ export class GeminiWebServer {
     this._setupWss();
   }
 
-  listen(port?: number): Promise<number> {
+  async listen(port?: number): Promise<number> {
     const p = port ?? this.config.port;
+
+    // Load persisted sessions BEFORE starting HTTP server
+    await this._loadPersistedSessions();
+
     return new Promise((resolve, reject) => {
       this.httpServer.once('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
@@ -101,7 +118,22 @@ export class GeminiWebServer {
     });
   }
 
-  close(): Promise<void> {
+  async close(): Promise<void> {
+    log('Server shutting down...');
+
+    // Persist final state immediately (bypass debounce)
+    try {
+      const data = this._buildPersistedData();
+      await this.persistence.writeNow(data);
+      log('Persisted final state on shutdown');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log('Failed to persist on shutdown:', msg);
+    }
+
+    // Clean up persistence timer
+    this.persistence.cleanup();
+
     return new Promise((resolve) => {
       // Clean up all instances
       for (const instanceId of [...this.instances.keys()]) {
@@ -128,6 +160,198 @@ export class GeminiWebServer {
     return this.httpServer;
   }
 
+  // --- Persistence ---
+
+  private async _loadPersistedSessions(): Promise<void> {
+    try {
+      const data = await this.persistence.load();
+
+      log(`Loading ${data.sessions.length} persisted sessions`);
+
+      for (const sessionData of data.sessions) {
+        // Restore session object
+        const session: Session = {
+          id: sessionData.id,
+          activeInstanceId: sessionData.activeInstanceId,
+          instances: new Set(sessionData.instances.map((i) => i.id)),
+          sseClients: new Set(),
+          lastSeenAt: sessionData.lastSeenAt,
+        };
+        this.sessions.set(session.id, session);
+
+        // Restore instances based on provider
+        for (const instData of sessionData.instances) {
+          if (instData.providerName === 'claude') {
+            await this._restoreClaudeInstance(instData, session.id);
+          } else if (instData.providerName === 'gemini') {
+            await this._restoreGeminiInstance(instData, session.id);
+          }
+        }
+      }
+
+      log(
+        `Restored ${this.sessions.size} sessions, ${this.instances.size} instances`,
+      );
+
+      // Log active instance IDs for verification
+      for (const [sessionId, session] of this.sessions) {
+        log('Session restored', {
+          sessionId: sessionId.slice(0, 8),
+          activeInstanceId: session.activeInstanceId?.slice(0, 8) ?? null,
+          instanceCount: session.instances.size,
+        });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log('Failed to load persisted sessions:', msg);
+    }
+  }
+
+  private async _restoreClaudeInstance(
+    instData: PersistedInstance,
+    sessionId: string,
+  ): Promise<void> {
+    log('Restoring Claude instance', {
+      instanceId: instData.id,
+      claudeSessionId: instData.claudeSessionId,
+    });
+
+    const emitUpdate = (snapshot: {
+      type: 'bridge:update';
+      payload: BridgeUpdatePayload;
+    }) => {
+      const inst = this.instances.get(instData.id);
+      if (!inst) return;
+      inst.lastSnapshot = snapshot.payload;
+      this._sendToSession(sessionId, snapshot);
+      this._persistState();
+    };
+
+    const bridge = new ClaudeBridge({
+      instanceId: instData.id,
+      projectPath: instData.projectPath,
+      emitUpdate,
+      yolo: false,
+    });
+
+    // CRITICAL: Restore Claude SDK session ID
+    if (instData.claudeSessionId) {
+      (bridge as unknown as { _sessionId: string })._sessionId =
+        instData.claudeSessionId;
+      log('Restored Claude SDK session ID', {
+        instanceId: instData.id,
+        sessionId: instData.claudeSessionId,
+      });
+    }
+
+    const inst: Instance = {
+      id: instData.id,
+      sessionId,
+      provider: bridge,
+      providerName: 'claude',
+      projectPath: instData.projectPath,
+      status: 'disconnected',
+      error: null,
+      lastSnapshot: instData.lastSnapshot,
+    };
+    this.instances.set(instData.id, inst);
+
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.instances.add(instData.id);
+    }
+
+    try {
+      await bridge.start();
+      inst.status = 'connected';
+      log('Claude instance restored successfully', { instanceId: instData.id });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      inst.status = 'error';
+      inst.error = msg;
+      log('Claude instance restoration failed', {
+        instanceId: instData.id,
+        error: msg,
+      });
+    }
+  }
+
+  private async _restoreGeminiInstance(
+    instData: PersistedInstance,
+    sessionId: string,
+  ): Promise<void> {
+    log('Restoring Gemini instance', {
+      instanceId: instData.id,
+      geminiSessionId: instData.geminiSessionId,
+    });
+
+    // Spawn with --resume flag, mark as restoring to preserve activeInstanceId
+    await this._spawnGeminiInstance(
+      instData.id,
+      instData.projectPath,
+      sessionId,
+      instData.projectPath,
+      false,
+      instData.geminiSessionId,
+      true, // isRestoring = true
+    );
+  }
+
+  private _buildPersistedData(): PersistedData {
+    const data: PersistedData = {
+      version: 1,
+      lastUpdated: new Date().toISOString(),
+      sessions: [],
+    };
+
+    for (const [sessionId, session] of this.sessions) {
+      const sessionData: PersistedSession = {
+        id: sessionId,
+        activeInstanceId: session.activeInstanceId,
+        lastSeenAt: session.lastSeenAt,
+        instances: [],
+      };
+
+      for (const instanceId of session.instances) {
+        const inst = this.instances.get(instanceId);
+        if (!inst) continue;
+
+        const instData: PersistedInstance = {
+          id: inst.id,
+          sessionId: inst.sessionId,
+          provider: inst.providerName,
+          providerName: inst.providerName,
+          projectPath: inst.projectPath,
+          status: inst.status,
+          error: inst.error,
+          lastSnapshot: inst.lastSnapshot,
+        };
+
+        // Extract provider-specific session IDs
+        if (inst.providerName === 'claude') {
+          const claudeBridge = inst.provider as ClaudeBridge;
+          instData.claudeSessionId = (
+            claudeBridge as unknown as { _sessionId: string | null }
+          )._sessionId ?? undefined;
+        } else if (inst.providerName === 'gemini') {
+          const geminiBridge = inst.provider as GeminiBridge;
+          instData.geminiSessionId = geminiBridge.geminiSessionId;
+        }
+
+        sessionData.instances.push(instData);
+      }
+
+      data.sessions.push(sessionData);
+    }
+
+    return data;
+  }
+
+  private _persistState(): void {
+    const data = this._buildPersistedData();
+    this.persistence.scheduleWrite(data);
+  }
+
   // --- Session management ---
 
   private _createSession(): Session {
@@ -140,6 +364,7 @@ export class GeminiWebServer {
       lastSeenAt: Date.now(),
     };
     this.sessions.set(id, session);
+    this._persistState();
     return session;
   }
 
@@ -242,6 +467,8 @@ export class GeminiWebServer {
     sessionId: string,
     resolvedPath: string,
     yolo = false,
+    resumeSessionId?: string,
+    isRestoring = false,
   ): Promise<void> {
     const callbacks = {
       onStatusChange: (
@@ -296,6 +523,7 @@ export class GeminiWebServer {
         } else {
           this._broadcastToAllSessions(event);
         }
+        this._persistState();
       },
       onExit: () => {
         this._cleanupInstance(instanceId, 'exit');
@@ -311,6 +539,7 @@ export class GeminiWebServer {
       config: this.config,
       callbacks,
       yolo,
+      resumeSessionId,
     });
 
     const inst: Instance = {
@@ -328,7 +557,10 @@ export class GeminiWebServer {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.instances.add(instanceId);
-      session.activeInstanceId = instanceId;
+      // Only set as active instance when creating NEW instances, not when restoring
+      if (!isRestoring) {
+        session.activeInstanceId = instanceId;
+      }
     }
 
     this._sendToSession(sessionId, {
@@ -340,6 +572,7 @@ export class GeminiWebServer {
     this._sendInstanceList(sessionId);
 
     await bridge.start();
+    this._persistState();
   }
 
   private async _spawnClaudeInstance(
@@ -348,6 +581,7 @@ export class GeminiWebServer {
     sessionId: string,
     resolvedPath: string,
     yolo = false,
+    isRestoring = false,
   ): Promise<void> {
     log('spawn claude', {
       instanceId,
@@ -363,6 +597,7 @@ export class GeminiWebServer {
       if (!inst) return;
       inst.lastSnapshot = snapshot.payload;
       this._sendToSession(sessionId, snapshot);
+      this._persistState();
     };
 
     const bridge = new ClaudeBridge({
@@ -387,7 +622,10 @@ export class GeminiWebServer {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.instances.add(instanceId);
-      session.activeInstanceId = instanceId;
+      // Only set as active instance when creating NEW instances, not when restoring
+      if (!isRestoring) {
+        session.activeInstanceId = instanceId;
+      }
     }
 
     this._sendToSession(sessionId, {
@@ -416,6 +654,8 @@ export class GeminiWebServer {
         type: 'bridge:update',
         payload: bridge.accumulator.snapshot(),
       });
+
+      this._persistState();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       log('Claude spawn error:', msg);
@@ -452,6 +692,7 @@ export class GeminiWebServer {
         status: 'disconnected' as const,
       });
     }
+    this._persistState();
   }
 
   private _terminateInstance(instanceId: string): void {
@@ -507,6 +748,7 @@ export class GeminiWebServer {
                   type: 'bridge:update',
                   payload: p,
                 });
+                this._persistState();
               },
               onExit: () => this._cleanupInstance(instanceId, 'exit'),
               onError: (msg) => this._markInstanceError(instanceId, msg),
@@ -859,6 +1101,7 @@ export class GeminiWebServer {
         }
       }
       session.activeInstanceId = instanceId || null;
+      this._persistState();
       logCommand(sessionId, body, { status: 200, ok: true });
       sendJson(res, 200, { ok: true });
       return;

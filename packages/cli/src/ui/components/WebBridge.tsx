@@ -70,6 +70,7 @@ type BridgeModelOption = {
 
 type BridgeSnapshot = {
   instanceId: string;
+  sessionId?: string;
   projectPath: string;
   history: BridgeHistoryItem[];
   pending: BridgeHistoryItem[];
@@ -296,6 +297,7 @@ export const WebBridge = () => {
       .filter((item): item is BridgeHistoryItem => item !== null);
     return {
       instanceId: process.env['GEMINI_INSTANCE_ID'] ?? 'default',
+      sessionId: config?.getSessionId(),
       projectPath: process.cwd(),
       history,
       pending,
@@ -313,6 +315,7 @@ export const WebBridge = () => {
     currentModel,
     availableModels,
     hasPreviewAccess,
+    config,
   ]);
 
   const findToolInfo = (

@@ -5,203 +5,247 @@ import Combine
 import SpeechRecognitionKit
 
 struct ComposerView: View {
+
+    // MARK: Public API
+
     let disabled: Bool
-    let streamingState: StreamingState
+    let streaming: Bool
+    let maxLines: Int
+
     let onSubmit: (String) -> Void
     let onInterrupt: (() -> Void)?
 
-    @State private var text = ""
-    @FocusState private var isFocused: Bool
-    @StateObject private var speechRecognizer = SpeechRecognitionService()
-    @State private var isRecording = false
-    @State private var isPaused = false
-    @State private var loadingRotation: Double = 0
+    // MARK: Internal State
 
-    private var canSubmit: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !disabled
-    }
+    @State private var text: String = ""
+    @State private var draftBeforeRecording: String = ""
+
+    @FocusState private var isFocused: Bool?
+
+    @State private var isRecording: Bool = false
+    @State private var isPaused: Bool = false
+
+    @StateObject private var speech = SpeechRecognitionService()
+
+    // MARK: Derived State
 
     private var isEmpty: Bool {
         text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private var isStreaming: Bool {
-        streamingState != .idle
+    private var expanded: Bool {
+      (isFocused == true) || !isEmpty || isRecording || isPaused
     }
+
+    private var canSubmit: Bool {
+        !isEmpty && !disabled && !streaming
+    }
+
+    private var canUseMic: Bool {
+        speech.isModelLoaded && !disabled && !streaming
+    }
+
+    // MARK: Body
 
     var body: some View {
         VStack(spacing: 0) {
-            Divider()
-                .opacity(0.5)
 
-            // Unified composer area - entire area is tappable
-            HStack(alignment: .center, spacing: Spacing.md) {
-                // Text field - vertically centered
-                TextField("Message", text: $text, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .lineLimit(1...8)
-                    .focused($isFocused)
-                    .disabled(disabled || isRecording)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.sentences)
-                    .onSubmit {
-                        if canSubmit {
-                            submitMessage()
-                        }
-                    }
+            Divider().opacity(0.4)
 
-                // Stop, Send or Mic button
-                if isStreaming {
-                    // Show stop button when Gemini is responding
-                    Button {
-                        onInterrupt?()
-                    } label: {
-                        Image(systemName: "stop.circle.fill")
-                            .font(.system(size: 32, weight: .medium))
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(Color.statusError)
-                    }
-                    .buttonStyle(.plain)
-                } else if isEmpty && !isRecording && speechRecognizer.isAvailable {
-                    // Mic button with loading indicator
-                    ZStack {
-                        if speechRecognizer.isModelLoading {
-                            Circle()
-                                .trim(from: 0, to: 0.7)
-                                .stroke(Color.accentColor.opacity(0.3), lineWidth: 2)
-                                .frame(width: 36, height: 36)
-                                .rotationEffect(.degrees(loadingRotation))
-                        }
+            VStack(spacing: 8) {
 
-                        Button {
-                            startRecording()
-                        } label: {
-                            Image(systemName: "mic.circle.fill")
-                                .font(.system(size: 32, weight: .medium))
-                                .symbolRenderingMode(.hierarchical)
-                                .foregroundStyle(
-                                    !speechRecognizer.isModelLoaded || disabled
-                                        ? Color.secondary.opacity(0.5)
-                                        : Color.accentColor
-                                )
-                        }
-                        .disabled(!speechRecognizer.isModelLoaded || disabled)
-                        .buttonStyle(.plain)
-                    }
-                    .onAppear {
-                        if speechRecognizer.isModelLoading {
-                            withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
-                                loadingRotation = 360
-                            }
-                        }
-                    }
-                    .onChange(of: speechRecognizer.isModelLoading) { _, isLoading in
-                        if isLoading {
-                            withAnimation(.linear(duration: 1).repeatForever(autoreverses: false)) {
-                                loadingRotation = 360
-                            }
-                        } else {
-                            loadingRotation = 0
-                        }
-                    }
-                } else if isRecording || isPaused {
-                    HStack(spacing: Spacing.sm) {
-                        // Mic button (toggles recording/pause)
-                        Button {
-                            toggleRecording()
-                        } label: {
-                            Image(systemName: isRecording ? "mic.circle.fill" : "mic.circle")
-                                .font(.system(size: 28, weight: .medium))
-                                .symbolRenderingMode(.hierarchical)
-                                .foregroundStyle(isRecording ? Color.accentColor : Color.secondary)
-                        }
-                        .buttonStyle(.plain)
+                inputRow
 
-                        // Up arrow button to send
-                        Button {
-                            stopAndSend()
-                        } label: {
-                            Image(systemName: "arrow.up.circle.fill")
-                                .font(.system(size: 32, weight: .medium))
-                                .symbolRenderingMode(.hierarchical)
-                                .foregroundStyle(Color.accentColor)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                } else {
-                    Button(action: submitMessage) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 32, weight: .medium))
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(canSubmit ? Color.accentColor : Color.secondary.opacity(0.5))
-                    }
-                    .disabled(!canSubmit)
-                    .buttonStyle(.plain)
+                if expanded {
+                    bottomControls
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
-            .animation(AppAnimation.quick, value: isEmpty)
-            .animation(AppAnimation.quick, value: isRecording)
-            .animation(AppAnimation.quick, value: isStreaming)
-            .padding(.horizontal, Spacing.lg)
-            .padding(.top, Spacing.md)
-            .padding(.bottom, Spacing.lg) // More bottom padding for home indicator
-            .background(.regularMaterial)
-            .contentShape(Rectangle()) // Make entire area tappable
-            .onTapGesture {
-                isFocused = true
+            .padding(.horizontal, 16)
+            .padding(.vertical, expanded ? 12 : 8)
+            .background(.ultraThinMaterial)
+            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: expanded)
+        }
+        .onChange(of: speech.transcript) { _, new in
+            guard isRecording else { return }
+            DispatchQueue.main.async {
+                text = draftBeforeRecording + new
             }
         }
-        .onChange(of: speechRecognizer.transcript) { _, newValue in
-            if isRecording {
-                text = newValue
+        .onAppear { speech.preloadModel() }
+    }
+
+    // MARK: Input Row
+
+    private var inputRow: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+
+            growingTextField
+
+            if !expanded {
+                micButton
+                    .transition(.scale.combined(with: .opacity))
             }
-        }
-        .onAppear {
-            speechRecognizer.preloadModel()
         }
     }
 
-    private func submitMessage() {
+    // MARK: Growing TextField
+
+    private var growingTextField: some View {
+        ZStack(alignment: .leading) {
+
+            if text.isEmpty {
+                Text(isRecording ? "Listening…" : "Message")
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+            }
+
+            TextField("", text: $text, axis: .vertical)
+                .lineLimit(1...maxLines)
+                .focused($isFocused, equals: true)
+                .disabled(disabled || streaming || isRecording)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(Color(.secondarySystemBackground))
+                )
+        }
+    }
+
+    // MARK: Bottom Controls
+
+    private var bottomControls: some View {
+        HStack {
+
+            if isRecording || isPaused {
+                recordingControls
+            } else {
+                micAndSendControls
+            }
+        }
+    }
+
+    // MARK: Mic + Send (typing state)
+
+    private var micAndSendControls: some View {
+        HStack(spacing: 12) {
+            Spacer()
+
+            micButton
+
+            sendButton
+        }
+    }
+
+    // MARK: Recording Controls
+
+    private var recordingControls: some View {
+        HStack(spacing: 12) {
+
+            cancelRecording
+
+            confirmRecording
+
+            sendButton
+
+            Spacer()
+        }
+    }
+
+    // MARK: Buttons
+
+    private var micButton: some View {
+        Button(action: startRecording) {
+            Image(systemName: "mic.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .background(canUseMic ? Color.accentColor : Color.gray)
+                .clipShape(Circle())
+        }
+        .disabled(!canUseMic)
+    }
+
+    private var sendButton: some View {
+        Button(action: submit) {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .background(canSubmit ? Color.accentColor : Color.gray.opacity(0.4))
+                .clipShape(Circle())
+        }
+        .disabled(!canSubmit)
+    }
+
+    private var cancelRecording: some View {
+        Button(action: cancelRecordingAction) {
+            Image(systemName: "xmark")
+                .font(.system(size: 16, weight: .bold))
+                .frame(width: 36, height: 36)
+                .background(Color.gray.opacity(0.2))
+                .clipShape(Circle())
+        }
+    }
+
+    private var confirmRecording: some View {
+        Button(action: confirmRecordingAction) {
+            Image(systemName: "checkmark")
+                .font(.system(size: 16, weight: .bold))
+                .frame(width: 36, height: 36)
+                .background(Color.green.opacity(0.2))
+                .clipShape(Circle())
+        }
+    }
+
+    // MARK: Actions
+
+    private func submit() {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+
         onSubmit(trimmed)
+
         text = ""
-        isFocused = false
+        isFocused = nil
     }
 
     private func startRecording() {
-        speechRecognizer.requestAuthorization { authorized in
-            if authorized {
+        guard canUseMic else { return }
+
+        draftBeforeRecording = text
+
+        speech.requestAuthorization { ok in
+            guard ok else { return }
+
+            DispatchQueue.main.async {
                 isRecording = true
                 isPaused = false
-                text = ""
-                speechRecognizer.startTranscribing()
+                isFocused = true
             }
+
+            speech.startTranscribing()
         }
     }
 
-    private func toggleRecording() {
-        if isRecording {
-            // Pause recording
-            speechRecognizer.stopTranscribing()
+    private func cancelRecordingAction() {
+        speech.stopTranscribing()
+
+        DispatchQueue.main.async {
+            text = draftBeforeRecording
             isRecording = false
-            isPaused = true
-        } else if isPaused {
-            // Resume recording
-            speechRecognizer.startTranscribing()
-            isRecording = true
             isPaused = false
         }
     }
 
-    private func stopAndSend() {
-        if isRecording {
-            speechRecognizer.stopTranscribing()
-        }
-        isRecording = false
-        isPaused = false
-        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            submitMessage()
+    private func confirmRecordingAction() {
+        speech.stopTranscribing()
+
+        DispatchQueue.main.async {
+            isRecording = false
+            isPaused = false
         }
     }
 }
@@ -312,14 +356,3 @@ struct StatusIndicatorView: View {
     }
 }
 
-#Preview {
-    VStack {
-        Spacer()
-        ComposerView(
-            disabled: false,
-            streamingState: .idle,
-            onSubmit: { _ in },
-            onInterrupt: nil
-        )
-    }
-}
