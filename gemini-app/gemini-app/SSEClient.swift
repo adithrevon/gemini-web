@@ -4,14 +4,16 @@ final class SSEClient: NSObject {
     private let url: URL
     private lazy var session: URLSession = {
         let configuration = URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = 60
+        configuration.timeoutIntervalForRequest = 300
         configuration.timeoutIntervalForResource = 0
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
+        configuration.waitsForConnectivity = true
         return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
     }()
     private var task: URLSessionDataTask?
     private var buffer = ""
+    private var hasOpened = false
 
     var onOpen: (() -> Void)?
     var onMessage: ((String) -> Void)?
@@ -24,10 +26,12 @@ final class SSEClient: NSObject {
 
     func connect() {
         disconnect()
+        hasOpened = false
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        request.timeoutInterval = 300
 
         let task = session.dataTask(with: request)
         self.task = task
@@ -45,11 +49,7 @@ final class SSEClient: NSObject {
 extension SSEClient: URLSessionDataDelegate {
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard let text = String(data: data, encoding: .utf8) else { return }
-        if buffer.isEmpty {
-            DispatchQueue.main.async { [weak self] in
-                self?.onOpen?()
-            }
-        }
+        markOpenIfNeeded()
         buffer.append(text.replacingOccurrences(of: "\r\n", with: "\n"))
         parseBuffer()
     }
@@ -61,6 +61,10 @@ extension SSEClient: URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        if let httpResponse = response as? HTTPURLResponse,
+           (200..<300).contains(httpResponse.statusCode) {
+            markOpenIfNeeded()
+        }
         completionHandler(.allow)
     }
 
@@ -82,6 +86,14 @@ extension SSEClient: URLSessionDataDelegate {
                     self?.onMessage?(data)
                 }
             }
+        }
+    }
+
+    private func markOpenIfNeeded() {
+        guard !hasOpened else { return }
+        hasOpened = true
+        DispatchQueue.main.async { [weak self] in
+            self?.onOpen?()
         }
     }
 }

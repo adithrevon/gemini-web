@@ -20,6 +20,9 @@ struct NewChatView: View {
     @State private var sudoMode: Bool = false
     @State private var selectedModel: String = Provider.gemini.defaultModel
     @State private var hasInitialized = false
+    #if os(iOS)
+    @State private var keyboardHeight: CGFloat = 0
+    #endif
 
     private var isConnecting: Bool {
         status == .connecting
@@ -132,18 +135,39 @@ struct NewChatView: View {
                 Spacer()
             }
             .padding(.horizontal, Spacing.lg)
+            .layoutPriority(1)
 
-          ComposerView(
-            disabled: composerDisabled || selectedProject.isEmpty,
-            streaming: false,
-            maxLines: 4,
-            onSubmit: { text in
-              didSendMessage = true
-              onSubmitMessage(text)
-          },
-            onInterrupt: nil
-          )
+            Spacer(minLength: 0)
+
+            ComposerView(
+                disabled: composerDisabled || selectedProject.isEmpty,
+                streamingState: .idle,
+                maxLines: 4,
+                modelSelector: nil,
+                onSubmit: { text in
+                    didSendMessage = true
+                    onSubmitMessage(text)
+                },
+                onInterrupt: nil
+            )
+            #if os(iOS)
+            .padding(.bottom, keyboardHeight)
+            #endif
         }
+        #if os(iOS)
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+        #endif
+        #if os(iOS)
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+            guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            let screenHeight = UIScreen.main.bounds.height
+            let height = max(0, screenHeight - frame.origin.y)
+            keyboardHeight = height
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardHeight = 0
+        }
+        #endif
         .onAppear {
             guard !hasInitialized else { return }
             hasInitialized = true

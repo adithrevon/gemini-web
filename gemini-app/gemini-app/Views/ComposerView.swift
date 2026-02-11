@@ -9,8 +9,9 @@ struct ComposerView: View {
     // MARK: Public API
 
     let disabled: Bool
-    let streaming: Bool
+    let streamingState: StreamingState
     let maxLines: Int
+    let modelSelector: ModelSelectorConfig?
 
     let onSubmit: (String) -> Void
     let onInterrupt: (() -> Void)?
@@ -33,16 +34,24 @@ struct ComposerView: View {
         text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var isStreaming: Bool {
+        streamingState == .responding || streamingState == .tool
+    }
+
     private var expanded: Bool {
-      (isFocused == true) || !isEmpty || isRecording || isPaused
+        (isFocused == true) || !isEmpty || isRecording || isPaused || isStreaming
     }
 
     private var canSubmit: Bool {
-        !isEmpty && !disabled && !streaming
+        !isEmpty && !disabled && !isStreaming
     }
 
     private var canUseMic: Bool {
-        speech.isModelLoaded && !disabled && !streaming
+        speech.isModelLoaded && !disabled && !isStreaming && !isRecording
+    }
+
+    private var canInterrupt: Bool {
+        isStreaming && onInterrupt != nil
     }
 
     // MARK: Body
@@ -65,6 +74,12 @@ struct ComposerView: View {
             .padding(.vertical, expanded ? 12 : 8)
             .background(.ultraThinMaterial)
             .animation(.spring(response: 0.35, dampingFraction: 0.85), value: expanded)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if !disabled && !isStreaming && !isRecording {
+                    isFocused = true
+                }
+            }
         }
         .onChange(of: speech.transcript) { _, new in
             guard isRecording else { return }
@@ -79,10 +94,12 @@ struct ComposerView: View {
 
     private var inputRow: some View {
         HStack(alignment: .bottom, spacing: 8) {
-
             growingTextField
-
-            if !expanded {
+            // Trailing action: stop while streaming, otherwise mic when collapsed
+            if isStreaming {
+                stopButton
+                    .transition(.scale.combined(with: .opacity))
+            } else if !expanded {
                 micButton
                     .transition(.scale.combined(with: .opacity))
             }
@@ -104,13 +121,15 @@ struct ComposerView: View {
             TextField("", text: $text, axis: .vertical)
                 .lineLimit(1...maxLines)
                 .focused($isFocused, equals: true)
-                .disabled(disabled || streaming || isRecording)
+                .disabled(disabled || isStreaming || isRecording)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
                 .background(
                     RoundedRectangle(cornerRadius: 20)
-                        .fill(Color(.secondarySystemBackground))
+                        .fill(Color.clear)
                 )
+                .textFieldStyle(.plain)
+                .autocorrectionDisabled()
         }
     }
 
@@ -131,11 +150,23 @@ struct ComposerView: View {
 
     private var micAndSendControls: some View {
         HStack(spacing: 12) {
+            if let config = modelSelector {
+                ModelSelectorView(
+                    currentModel: config.currentModel,
+                    availableModels: config.availableModels,
+                    disabled: config.disabled
+                ) { model in
+                    config.onSelect(model)
+                }
+            }
             Spacer()
 
-            micButton
-
-            sendButton
+            if !isStreaming {
+                micButton
+            }
+            if !isEmpty {
+                sendButton
+            }
         }
     }
 
@@ -143,14 +174,13 @@ struct ComposerView: View {
 
     private var recordingControls: some View {
         HStack(spacing: 12) {
+            Spacer()
 
             cancelRecording
 
             confirmRecording
 
             sendButton
-
-            Spacer()
         }
     }
 
@@ -180,6 +210,18 @@ struct ComposerView: View {
         .disabled(!canSubmit)
     }
 
+    private var stopButton: some View {
+        Button(action: { onInterrupt?() }) {
+            Image(systemName: "stop.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .background(Color.red)
+                .clipShape(Circle())
+        }
+        .disabled(!canInterrupt)
+    }
+
     private var cancelRecording: some View {
         Button(action: cancelRecordingAction) {
             Image(systemName: "xmark")
@@ -206,6 +248,12 @@ struct ComposerView: View {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
+        if isRecording || isPaused {
+            speech.stopTranscribing()
+            isRecording = false
+            isPaused = false
+        }
+
         onSubmit(trimmed)
 
         text = ""
@@ -223,7 +271,7 @@ struct ComposerView: View {
             DispatchQueue.main.async {
                 isRecording = true
                 isPaused = false
-                isFocused = true
+                isFocused = nil
             }
 
             speech.startTranscribing()
@@ -248,6 +296,15 @@ struct ComposerView: View {
             isPaused = false
         }
     }
+}
+
+// MARK: - Model Selector Config
+
+struct ModelSelectorConfig {
+    let currentModel: String
+    let availableModels: [ModelOption]
+    let disabled: Bool
+    let onSelect: (String) -> Void
 }
 
 // MARK: - Model Selector
@@ -355,4 +412,3 @@ struct StatusIndicatorView: View {
             }
     }
 }
-

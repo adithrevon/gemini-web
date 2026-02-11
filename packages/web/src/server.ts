@@ -330,9 +330,9 @@ export class GeminiWebServer {
         // Extract provider-specific session IDs
         if (inst.providerName === 'claude') {
           const claudeBridge = inst.provider as ClaudeBridge;
-          instData.claudeSessionId = (
-            claudeBridge as unknown as { _sessionId: string | null }
-          )._sessionId ?? undefined;
+          instData.claudeSessionId =
+            (claudeBridge as unknown as { _sessionId: string | null })
+              ._sessionId ?? undefined;
         } else if (inst.providerName === 'gemini') {
           const geminiBridge = inst.provider as GeminiBridge;
           instData.geminiSessionId = geminiBridge.geminiSessionId;

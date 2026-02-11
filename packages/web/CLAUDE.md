@@ -9,6 +9,7 @@
 #### When Tests Are Required
 
 ✅ **Always write tests for:**
+
 - New API endpoints or routes
 - State management changes (sessions, instances, persistence)
 - Multi-instance or multi-session scenarios
@@ -18,6 +19,7 @@
 - Error handling and edge cases
 
 ❌ **Do NOT merge without tests for:**
+
 - Features that affect session/instance lifecycle
 - Changes to persistence or restoration logic
 - Modifications to message routing
@@ -35,6 +37,7 @@
 #### Test Location
 
 Place all integration tests in:
+
 ```
 packages/web/src/__tests__/
 ```
@@ -86,11 +89,10 @@ describe('Feature Name', () => {
     const sessionId = session.json?.['sessionId'] as string;
 
     // Act: Perform the action
-    const result = await post(
-      t.baseUrl,
-      `/api/session/${sessionId}/command`,
-      { type: 'myCommand', data: 'test' }
-    );
+    const result = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
+      type: 'myCommand',
+      data: 'test',
+    });
 
     // Assert: Verify the outcome
     expect(result.status).toBe(200);
@@ -105,7 +107,8 @@ describe('Feature Name', () => {
 
 #### Multi-Instance Test Pattern
 
-**CRITICAL:** Always test multi-instance scenarios for features that affect routing or state:
+**CRITICAL:** Always test multi-instance scenarios for features that affect
+routing or state:
 
 ```typescript
 it('handles multiple instances correctly', async () => {
@@ -152,16 +155,19 @@ it('restores state correctly after server restart', async () => {
 The `activeInstanceId` bug (Feb 2026) was caused by missing integration tests:
 
 **What happened:**
+
 - Persistence feature added WITHOUT tests
 - Bug in multi-instance restoration went undetected
 - Messages routed to wrong conversation after server restart
 
 **What was missing:**
+
 - No test for multi-instance restoration
 - No test for activeInstanceId preservation
 - No test for message routing validation
 
 **The fix:**
+
 - Added `isRestoring` parameter to prevent overwriting activeInstanceId
 - Added comprehensive persistence tests (`persistence.test.ts`)
 - Now have 100% coverage for restoration logic
@@ -175,6 +181,7 @@ For complex features, consider **Test-Driven Development (TDD)**:
 3. **Refactor** - Clean up while tests still pass
 
 This ensures:
+
 - ✅ Feature works as expected
 - ✅ Edge cases are handled
 - ✅ Regressions are caught immediately
@@ -196,6 +203,7 @@ Before submitting a PR, verify:
 ## Getting Help
 
 If you're unsure what tests to write:
+
 1. Look at existing test files for patterns
 2. Check `TEST_GAP_ANALYSIS.md` for examples
 3. Ask in code review: "What scenarios should I test?"
@@ -203,6 +211,7 @@ If you're unsure what tests to write:
 ## Test Helpers Available
 
 **`helpers.ts` provides:**
+
 - `startTestServer()` - Spin up test server
 - `post(url, path, body)` - HTTP POST requests
 - `get(url, path)` - HTTP GET requests

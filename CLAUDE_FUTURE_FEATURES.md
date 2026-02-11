@@ -5,7 +5,6 @@ initial integration. To revisit later.
 
 | Feature                            | SDK API                                                          | Description                                                         |
 | ---------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------- |
-| **Tool confirmation UI**           | `canUseTool` callback, `permissionMode: 'default'`               | Interactive approve/deny for tool calls (we bypass all permissions) |
 | **Cost & usage tracking**          | `SDKResultMessage.total_cost_usd`, `.usage`, `.modelUsage`       | Per-turn and total cost in USD, token counts per model              |
 | **Extended thinking**              | `maxThinkingTokens` option, thinking content blocks              | Claude's chain-of-thought reasoning visible in responses            |
 | **File checkpointing & rewinding** | `enableFileCheckpointing`, `rewindFiles()`                       | Track file changes, restore to previous state                       |

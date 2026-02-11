@@ -108,6 +108,7 @@ struct ContentView: View {
             SidebarView(
                 instances: store.sortedInstances,
                 activeInstanceId: store.activeInstanceId,
+                connected: store.connected,
                 onSelectInstance: { id in
                     store.setActiveInstance(id)
                     showNewChat = false
@@ -123,13 +124,9 @@ struct ContentView: View {
                 },
                 onTerminate: { instanceId in
                     store.terminateInstance(instanceId)
-                }
+                },
+                onOpenSettings: { showSettings = true }
             )
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button { showSettings = true } label: { Image(systemName: "gear") }
-                }
-            }
             .navigationDestination(for: String.self) { value in
                 if value == "newChat" {
                     newChatScreen
@@ -150,6 +147,7 @@ struct ContentView: View {
             initialProject: pendingProjectPath,
             initialProvider: pendingProvider,
             composerDisabled: newChatDisabled,
+            connected: store.connected,
             status: displayStatus,
             onProjectSelected: { path, provider, yolo, model in
                 handleProjectSelected(path, provider: provider, yolo: yolo, model: model)
@@ -157,14 +155,14 @@ struct ContentView: View {
             onSubmitMessage: { msg in
                 if let instanceId = pendingInstanceId {
                     handleStartChat(msg)
-                    navigationPath.removeLast()
+                    navigationPath = NavigationPath()
                     navigationPath.append(instanceId)
                 }
             },
             onCancel: {
                 handleCancelNewChat()
-                navigationPath.removeLast()
             },
+            onOpenSettings: { showSettings = true },
             sessionStore: store
         )
         .navigationTitle("New Chat")
@@ -179,6 +177,7 @@ struct ContentView: View {
             SidebarView(
                 instances: store.sortedInstances,
                 activeInstanceId: store.activeInstanceId,
+                connected: store.connected,
                 onSelectInstance: { id in
                     store.setActiveInstance(id)
                     showNewChat = false
@@ -191,7 +190,8 @@ struct ContentView: View {
                 },
                 onTerminate: { instanceId in
                     store.terminateInstance(instanceId)
-                }
+                },
+                onOpenSettings: { showSettings = true }
             )
         } detail: {
             if showNewChat || !hasActiveChat {
@@ -232,6 +232,15 @@ struct ContentView: View {
             ComposerView(
                 disabled: isDisabled,
                 streamingState: instance.streamingState,
+                maxLines: 6,
+                modelSelector: ModelSelectorConfig(
+                    currentModel: instance.currentModel,
+                    availableModels: instance.availableModels,
+                    disabled: isDisabled || instance.streamingState != .idle,
+                    onSelect: { model in
+                        store.sendSetModel(model)
+                    }
+                ),
                 onSubmit: { text in store.sendSubmit(text) },
                 onInterrupt: { store.sendInterrupt() }
             )

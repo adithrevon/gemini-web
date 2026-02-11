@@ -318,6 +318,9 @@ final class SessionService: NSObject {
 
         client.onError = { [weak self] error in
             guard let self = self else { return }
+            if let urlError = error as? URLError, urlError.code == .cancelled {
+                return
+            }
             self.delegate?.sessionService(self, didDisconnect: error ?? SessionError.sseConnectionFailed)
             self.scheduleReconnect()
         }

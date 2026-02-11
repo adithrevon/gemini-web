@@ -9,9 +9,10 @@
 2. **Do NOT run the server** - Never start or restart the server (`npm start`).
    The user will manage the server themselves.
 
-3. **Integration tests are REQUIRED for new features** - All new backend features
-   MUST include integration tests. See [packages/web/CLAUDE.md](./packages/web/CLAUDE.md)
-   for testing requirements and patterns. Minimum 80% coverage for new code.
+3. **Integration tests are REQUIRED for new features** - All new backend
+   features MUST include integration tests. See
+   [packages/web/CLAUDE.md](./packages/web/CLAUDE.md) for testing requirements
+   and patterns. Minimum 80% coverage for new code.
 
 ## Repository Overview
 

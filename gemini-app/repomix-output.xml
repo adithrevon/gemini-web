@@ -1,0 +1,3938 @@
+This file is a merged representation of a subset of the codebase, containing files not matching ignore patterns, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching these patterns are excluded: gemini-app.xcodeproj/**/*, gemini-app.xcodeproj/*, gemini-app/Assets.xcassets/*, gemini-app/gemini-app.entitlements, .claude/settings.local.json, Info.plist, gemini-app/Assets.xcassets/**/*, gemini-app/SessionService.swift, gemini-app/SessionStore.swift, gemini-app/GeminiModels.swift
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+gemini-app/
+  Views/
+    ComposerView.swift
+    ConfirmationView.swift
+    MessageListView.swift
+    NewChatView.swift
+    OfflineComponents.swift
+    ProjectSelectorView.swift
+    SettingsView.swift
+    SidebarView.swift
+    ToolGroupView.swift
+  BackgroundTaskManager.swift
+  ContentView.swift
+  DesignSystem.swift
+  gemini_appApp.swift
+  InAppNotification.swift
+  NotificationService.swift
+  SSEClient.swift
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="gemini-app/Views/ComposerView.swift">
+import SwiftUI
+import Speech
+import AVFoundation
+import Combine
+import SpeechRecognitionKit
+
+struct ComposerView: View {
+
+    // MARK: Public API
+
+    let disabled: Bool
+    let streamingState: StreamingState
+    let maxLines: Int
+
+    let onSubmit: (String) -> Void
+    let onInterrupt: (() -> Void)?
+
+    // MARK: Internal State
+
+    @State private var text: String = ""
+    @State private var draftBeforeRecording: String = ""
+
+    @FocusState private var isFocused: Bool?
+
+    @State private var isRecording: Bool = false
+    @State private var isPaused: Bool = false
+
+    @StateObject private var speech = SpeechRecognitionService()
+
+    // MARK: Derived State
+
+    private var isEmpty: Bool {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var isStreaming: Bool {
+        streamingState == .responding || streamingState == .tool
+    }
+
+    private var expanded: Bool {
+        (isFocused == true) || !isEmpty || isRecording || isPaused || isStreaming
+    }
+
+    private var canSubmit: Bool {
+        !isEmpty && !disabled && !isStreaming
+    }
+
+    private var canUseMic: Bool {
+        speech.isModelLoaded && !disabled && !isStreaming && !isRecording
+    }
+
+    private var canInterrupt: Bool {
+        isStreaming && onInterrupt != nil
+    }
+
+    // MARK: Body
+
+    var body: some View {
+        VStack(spacing: 0) {
+
+            Divider().opacity(0.4)
+
+            VStack(spacing: 8) {
+
+                inputRow
+
+                if expanded {
+                    bottomControls
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, expanded ? 12 : 8)
+            .background(.ultraThinMaterial)
+            .animation(.spring(response: 0.35, dampingFraction: 0.85), value: expanded)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if !disabled && !isStreaming && !isRecording {
+                    isFocused = true
+                }
+            }
+        }
+        .onChange(of: speech.transcript) { _, new in
+            guard isRecording else { return }
+            DispatchQueue.main.async {
+                text = draftBeforeRecording + new
+            }
+        }
+        .onAppear { speech.preloadModel() }
+    }
+
+    // MARK: Input Row
+
+    private var inputRow: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+
+            // Stop button on the left during streaming
+            if isStreaming {
+                stopButton
+                    .transition(.scale.combined(with: .opacity))
+            }
+
+            growingTextField
+
+            // Mic button on the right when not expanded and not streaming
+            if !expanded && !isStreaming {
+                micButton
+                    .transition(.scale.combined(with: .opacity))
+            }
+        }
+    }
+
+    // MARK: Growing TextField
+
+    private var growingTextField: some View {
+        ZStack(alignment: .leading) {
+
+            if text.isEmpty {
+                Text(isRecording ? "Listening…" : "Message")
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+            }
+
+            TextField("", text: $text, axis: .vertical)
+                .lineLimit(1...maxLines)
+                .focused($isFocused, equals: true)
+                .disabled(disabled || isStreaming || isRecording)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(
+                    RoundedRectangle(cornerRadius: 20)
+                        .fill(Color(.secondarySystemBackground))
+                ).autocorrectionDisabled()
+        }
+    }
+
+    // MARK: Bottom Controls
+
+    private var bottomControls: some View {
+        HStack {
+
+            if isRecording || isPaused {
+                recordingControls
+            } else {
+                micAndSendControls
+            }
+        }
+    }
+
+    // MARK: Mic + Send (typing state)
+
+    private var micAndSendControls: some View {
+        HStack(spacing: 12) {
+            Spacer()
+
+            if !isStreaming {
+                micButton
+            }
+
+            sendButton
+        }
+    }
+
+    // MARK: Recording Controls
+
+    private var recordingControls: some View {
+        HStack(spacing: 12) {
+            Spacer()
+
+            cancelRecording
+
+            confirmRecording
+
+            sendButton
+        }
+    }
+
+    // MARK: Buttons
+
+    private var micButton: some View {
+        Button(action: startRecording) {
+            Image(systemName: "mic.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .background(canUseMic ? Color.accentColor : Color.gray)
+                .clipShape(Circle())
+        }
+        .disabled(!canUseMic)
+    }
+
+    private var sendButton: some View {
+        Button(action: submit) {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 18, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .background(canSubmit ? Color.accentColor : Color.gray.opacity(0.4))
+                .clipShape(Circle())
+        }
+        .disabled(!canSubmit)
+    }
+
+    private var stopButton: some View {
+        Button(action: { onInterrupt?() }) {
+            Image(systemName: "stop.fill")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 44, height: 44)
+                .background(Color.red)
+                .clipShape(Circle())
+        }
+        .disabled(!canInterrupt)
+    }
+
+    private var cancelRecording: some View {
+        Button(action: cancelRecordingAction) {
+            Image(systemName: "xmark")
+                .font(.system(size: 16, weight: .bold))
+                .frame(width: 36, height: 36)
+                .background(Color.gray.opacity(0.2))
+                .clipShape(Circle())
+        }
+    }
+
+    private var confirmRecording: some View {
+        Button(action: confirmRecordingAction) {
+            Image(systemName: "checkmark")
+                .font(.system(size: 16, weight: .bold))
+                .frame(width: 36, height: 36)
+                .background(Color.green.opacity(0.2))
+                .clipShape(Circle())
+        }
+    }
+
+    // MARK: Actions
+
+    private func submit() {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        onSubmit(trimmed)
+
+        text = ""
+        isFocused = nil
+    }
+
+    private func startRecording() {
+        guard canUseMic else { return }
+
+        draftBeforeRecording = text
+
+        speech.requestAuthorization { ok in
+            guard ok else { return }
+
+            DispatchQueue.main.async {
+                isRecording = true
+                isPaused = false
+                isFocused = true
+            }
+
+            speech.startTranscribing()
+        }
+    }
+
+    private func cancelRecordingAction() {
+        speech.stopTranscribing()
+
+        DispatchQueue.main.async {
+            text = draftBeforeRecording
+            isRecording = false
+            isPaused = false
+        }
+    }
+
+    private func confirmRecordingAction() {
+        speech.stopTranscribing()
+
+        DispatchQueue.main.async {
+            isRecording = false
+            isPaused = false
+        }
+    }
+}
+
+// MARK: - Model Selector
+
+struct ModelSelectorView: View {
+    let currentModel: String
+    let availableModels: [ModelOption]
+    let disabled: Bool
+    let onSelect: (String) -> Void
+
+    private var displayModels: [ModelOption] {
+        if availableModels.isEmpty {
+            return [
+                ModelOption(value: AppConstants.defaultModel, label: "Auto (Gemini 2.5)", description: "Let CLI decide", isAuto: true),
+                ModelOption(value: "gemini-2.5-pro", label: "Gemini 2.5 Pro", description: nil, isAuto: false),
+                ModelOption(value: "gemini-2.5-flash", label: "Gemini 2.5 Flash", description: nil, isAuto: false)
+            ]
+        }
+        return availableModels
+    }
+
+    private var currentLabel: String {
+        displayModels.first { $0.value == currentModel }?.label ?? currentModel
+    }
+
+    var body: some View {
+        Menu {
+            ForEach(displayModels) { model in
+                Button {
+                    onSelect(model.value)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(model.label)
+                            if let desc = model.description {
+                                Text(desc)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        if model.value == currentModel {
+                            Image(systemName: "checkmark")
+                                .foregroundStyle(Color.accentColor)
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: Spacing.xs) {
+                Image(systemName: "cpu")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(currentLabel)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, Spacing.sm)
+            .padding(.horizontal, Spacing.md)
+            .background(Color.surfaceSecondary.opacity(0.8))
+            .clipShape(Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .disabled(disabled)
+    }
+}
+
+// MARK: - Status Indicator (for toolbar)
+
+struct StatusIndicatorView: View {
+    let status: InstanceStatus
+
+    private var statusColor: Color {
+        switch status {
+        case .connected: return .statusConnected
+        case .connecting: return .statusConnecting
+        case .disconnected, .error: return .statusError
+        }
+    }
+
+    @State private var isPulsing = false
+
+    var body: some View {
+        Circle()
+            .fill(statusColor)
+            .frame(width: 8, height: 8)
+            .scaleEffect(status == .connecting && isPulsing ? 1.4 : 1.0)
+            .opacity(status == .connecting && isPulsing ? 0.5 : 1.0)
+            .animation(
+                status == .connecting
+                    ? .easeInOut(duration: 0.8).repeatForever(autoreverses: true)
+                    : .default,
+                value: isPulsing
+            )
+            .onAppear {
+                if status == .connecting {
+                    isPulsing = true
+                }
+            }
+            .onChange(of: status) { _, newStatus in
+                isPulsing = newStatus == .connecting
+            }
+    }
+}
+</file>
+
+<file path="gemini-app/Views/ConfirmationView.swift">
+import SwiftUI
+
+struct ConfirmationView: View {
+    let details: ConfirmationDetails
+    let isTrustedFolder: Bool
+    let onConfirm: (ConfirmOutcome) -> Void
+
+    @State private var isExpanded = false
+
+    private var confirmationType: ConfirmationType {
+        if details.command != nil {
+            return .command
+        } else if details.fileDiff != nil {
+            return .fileEdit
+        } else {
+            return .generic
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Header
+            HStack(spacing: Spacing.sm) {
+                // Icon
+                ZStack {
+                    Circle()
+                        .fill(Color.accentColor.opacity(0.15))
+                        .frame(width: 32, height: 32)
+
+                    Image(systemName: confirmationType.icon)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(confirmationType.title)
+                        .font(.subheadline.weight(.semibold))
+
+                    if let subtitle = details.fileName ?? details.toolDisplayName {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer()
+
+                // Expand/collapse for diff
+                if details.fileDiff != nil {
+                    Button {
+                        withAnimation(AppAnimation.quick) {
+                            isExpanded.toggle()
+                        }
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.vertical, Spacing.md)
+
+            // Command preview (inline)
+            if let command = details.command {
+                HStack(spacing: Spacing.sm) {
+                    Text("$")
+                        .font(.system(.caption, design: .monospaced).weight(.bold))
+                        .foregroundStyle(.tertiary)
+
+                    Text(command)
+                        .font(.system(.caption, design: .monospaced))
+                        .lineLimit(isExpanded ? nil : 2)
+                        .foregroundStyle(.primary)
+                }
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, Spacing.sm)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.surfaceTertiary.opacity(0.5))
+            }
+
+            // File diff (expandable)
+            if let fileDiff = details.fileDiff, isExpanded {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    ScrollView(.vertical, showsIndicators: true) {
+                        DiffView(diff: fileDiff)
+                            .padding(Spacing.sm)
+                    }
+                    .frame(maxHeight: 200)
+                }
+                .background(Color.surfaceTertiary.opacity(0.5))
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            // Action buttons
+            HStack(spacing: Spacing.sm) {
+                // Cancel
+                Button {
+                    onConfirm(.cancel)
+                } label: {
+                    Text("Deny")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, Spacing.sm)
+                        .background(Color.surfaceSecondary)
+                        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                // Proceed
+                Button {
+                    onConfirm(.proceed_once)
+                } label: {
+                    Text("Allow")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, Spacing.sm)
+                        .background(Color.accentColor)
+                        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                // Always (session-wide)
+                Button {
+                    onConfirm(.proceed_always)
+                } label: {
+                    Text("Always")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(Color.statusConnected)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, Spacing.sm)
+                        .background(Color.statusConnected.opacity(0.15))
+                        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(Spacing.md)
+        }
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.08), radius: 8, y: 2)
+    }
+}
+
+// MARK: - Confirmation Type
+
+private enum ConfirmationType {
+    case command
+    case fileEdit
+    case generic
+
+    var icon: String {
+        switch self {
+        case .command: return "terminal"
+        case .fileEdit: return "doc.badge.plus"
+        case .generic: return "questionmark.circle"
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .command: return "Run Command"
+        case .fileEdit: return "Edit File"
+        case .generic: return "Confirmation Required"
+        }
+    }
+}
+
+// MARK: - Diff View
+
+struct DiffView: View {
+    let diff: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(diff.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
+                DiffLineView(line: line)
+            }
+        }
+    }
+}
+
+struct DiffLineView: View {
+    let line: String
+
+    private var lineType: DiffLineType {
+        if line.hasPrefix("+") && !line.hasPrefix("+++") {
+            return .addition
+        } else if line.hasPrefix("-") && !line.hasPrefix("---") {
+            return .deletion
+        } else {
+            return .context
+        }
+    }
+
+    var body: some View {
+        Text(line)
+            .font(.system(.caption2, design: .monospaced))
+            .foregroundStyle(lineType.textColor)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Spacing.xs)
+            .background(lineType.backgroundColor)
+    }
+}
+
+private enum DiffLineType {
+    case addition
+    case deletion
+    case context
+
+    var textColor: Color {
+        switch self {
+        case .addition: return .green
+        case .deletion: return .red
+        case .context: return .primary
+        }
+    }
+
+    var backgroundColor: Color {
+        switch self {
+        case .addition: return .green.opacity(0.1)
+        case .deletion: return .red.opacity(0.1)
+        case .context: return .clear
+        }
+    }
+}
+
+#Preview("Command Confirmation") {
+    VStack(spacing: Spacing.lg) {
+        ConfirmationView(
+            details: ConfirmationDetails(
+                type: "exec",
+                title: nil,
+                command: "npm install @types/node --save-dev",
+                rootCommand: nil,
+                prompt: nil,
+                toolDisplayName: "Bash",
+                toolName: "bash",
+                fileName: nil,
+                filePath: nil,
+                fileDiff: nil
+            ),
+            isTrustedFolder: false,
+            onConfirm: { _ in }
+        )
+    }
+    .padding()
+    .background(Color.surfaceSecondary)
+}
+
+#Preview("File Edit Confirmation") {
+    VStack(spacing: Spacing.lg) {
+        ConfirmationView(
+            details: ConfirmationDetails(
+                type: "edit",
+                title: nil,
+                command: nil,
+                rootCommand: nil,
+                prompt: nil,
+                toolDisplayName: "Edit",
+                toolName: "edit",
+                fileName: "main.swift",
+                filePath: "/src/main.swift",
+                fileDiff: """
+                + import Foundation
+                - import UIKit
+
+                  func main() {
+                +     print("Hello")
+                  }
+                """
+            ),
+            isTrustedFolder: true,
+            onConfirm: { _ in }
+        )
+    }
+    .padding()
+    .background(Color.surfaceSecondary)
+}
+</file>
+
+<file path="gemini-app/Views/MessageListView.swift">
+import SwiftUI
+import Combine
+
+struct MessageListView: View {
+    let history: [Message]
+    let pending: [Message]
+    let streamingState: StreamingState
+    let isTrustedFolder: Bool
+    let onConfirm: (String, ConfirmOutcome, String?) -> Void
+
+    private var allMessages: [Message] {
+        history + pending
+    }
+
+    // Combine consecutive gemini messages into groups
+    private var groupedMessages: [(id: Int, content: GroupedMessage)] {
+        var result: [(id: Int, content: GroupedMessage)] = []
+        var currentGeminiTexts: [String] = []
+        var groupId = 0
+
+        for message in allMessages {
+            switch message {
+            case .gemini(let text), .geminiContent(let text):
+                currentGeminiTexts.append(text)
+            case .user(let text):
+                if !currentGeminiTexts.isEmpty {
+                    result.append((groupId, .geminiGroup(currentGeminiTexts)))
+                    groupId += 1
+                    currentGeminiTexts = []
+                }
+                result.append((groupId, .user(text)))
+                groupId += 1
+            case .toolGroup(let tools):
+                if !currentGeminiTexts.isEmpty {
+                    result.append((groupId, .geminiGroup(currentGeminiTexts)))
+                    groupId += 1
+                    currentGeminiTexts = []
+                }
+                result.append((groupId, .toolGroup(tools)))
+                groupId += 1
+            }
+        }
+
+        // Don't forget remaining gemini messages
+        if !currentGeminiTexts.isEmpty {
+            result.append((groupId, .geminiGroup(currentGeminiTexts)))
+        }
+
+        return result
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: Spacing.md) {
+                    ForEach(groupedMessages, id: \.id) { item in
+                        GroupedMessageRowView(
+                            message: item.content,
+                            isTrustedFolder: isTrustedFolder,
+                            onConfirm: onConfirm
+                        )
+                        .id(item.id)
+                        .transition(.asymmetric(
+                            insertion: .opacity.combined(with: .move(edge: .bottom)),
+                            removal: .opacity
+                        ))
+                    }
+
+                    // Typing indicator
+                    if streamingState == .responding {
+                        TypingIndicatorView()
+                            .id("typing")
+                            .transition(.opacity.combined(with: .scale(scale: 0.8)))
+                    }
+
+                    // Bottom anchor for scrolling
+                    Color.clear
+                        .frame(height: 1)
+                        .id("bottom")
+                }
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, Spacing.sm)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                dismissKeyboard()
+            }
+            .onChange(of: allMessages.count) { _, _ in
+                withAnimation(AppAnimation.spring) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+            }
+            .onChange(of: streamingState) { _, _ in
+                withAnimation(AppAnimation.spring) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+            }
+        }
+    }
+
+    private func dismissKeyboard() {
+        #if os(iOS)
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        #endif
+    }
+}
+
+// MARK: - Grouped Message Types
+
+enum GroupedMessage {
+    case user(String)
+    case geminiGroup([String])
+    case toolGroup([ToolCall])
+}
+
+// MARK: - Grouped Message Row
+
+struct GroupedMessageRowView: View {
+    let message: GroupedMessage
+    let isTrustedFolder: Bool
+    let onConfirm: (String, ConfirmOutcome, String?) -> Void
+
+    var body: some View {
+        switch message {
+        case .user(let text):
+            UserMessageView(text: text)
+        case .geminiGroup(let texts):
+            GeminiMessageView(texts: texts)
+        case .toolGroup(let tools):
+            ToolGroupView(
+                tools: tools,
+                isTrustedFolder: isTrustedFolder,
+                onConfirm: onConfirm
+            )
+        }
+    }
+}
+
+// MARK: - User Message
+
+struct UserMessageView: View {
+    let text: String
+
+    var body: some View {
+        HStack {
+            Spacer(minLength: 48)
+
+            Text(text)
+                .messageBubbleStyle(isUser: true)
+        }
+    }
+}
+
+// MARK: - Gemini Message
+
+struct GeminiMessageView: View {
+    let texts: [String]
+
+    private var combinedText: String {
+        texts.joined(separator: "\n\n")
+    }
+
+    var body: some View {
+        HStack(alignment: .top) {
+            MarkdownTextView(text: combinedText)
+                .textSelection(.enabled)
+                .padding(.horizontal, Spacing.lg)
+                .padding(.vertical, Spacing.md)
+                .background(Color.assistantBubble)
+                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous))
+
+            Spacer(minLength: 48)
+        }
+        .contextMenu {
+            Button {
+                UIPasteboard.general.string = combinedText
+            } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+        }
+    }
+}
+
+// MARK: - Markdown Text View
+
+struct MarkdownTextView: View {
+    let text: String
+
+    private var blocks: [MarkdownBlock] {
+        parseMarkdown(text)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                switch block {
+                case .heading(let level, let content):
+                    headingView(level: level, content: content)
+                case .bullet(let content):
+                    bulletView(content: content)
+                case .code(let content):
+                    codeBlockView(content: content)
+                case .paragraph(let content):
+                    paragraphView(content: content)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func headingView(level: Int, content: String) -> some View {
+        let font: Font = switch level {
+        case 1: .title2.bold()
+        case 2: .title3.bold()
+        case 3: .headline
+        default: .subheadline.bold()
+        }
+        Text(inlineMarkdown(content))
+            .font(font)
+    }
+
+    @ViewBuilder
+    private func bulletView(content: String) -> some View {
+        HStack(alignment: .top, spacing: Spacing.sm) {
+            Text("•")
+                .foregroundStyle(.secondary)
+            Text(inlineMarkdown(content))
+        }
+    }
+
+    @ViewBuilder
+    private func codeBlockView(content: String) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Text(content)
+                .font(.system(.caption, design: .monospaced))
+                .padding(Spacing.sm)
+        }
+        .background(Color.surfaceTertiary)
+        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
+    }
+
+    @ViewBuilder
+    private func paragraphView(content: String) -> some View {
+        if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            Text(inlineMarkdown(content))
+        }
+    }
+
+    private func inlineMarkdown(_ text: String) -> AttributedString {
+        (try? AttributedString(markdown: text, options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(text)
+    }
+
+    private func parseMarkdown(_ text: String) -> [MarkdownBlock] {
+        var blocks: [MarkdownBlock] = []
+        let lines = text.components(separatedBy: "\n")
+        var i = 0
+        var paragraphBuffer: [String] = []
+
+        func flushParagraph() {
+            if !paragraphBuffer.isEmpty {
+                let content = paragraphBuffer.joined(separator: " ")
+                if !content.trimmingCharacters(in: .whitespaces).isEmpty {
+                    blocks.append(.paragraph(content))
+                }
+                paragraphBuffer = []
+            }
+        }
+
+        while i < lines.count {
+            let line = lines[i]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            // Empty line - flush paragraph
+            if trimmed.isEmpty {
+                flushParagraph()
+                i += 1
+                continue
+            }
+
+            // Code block
+            if trimmed.hasPrefix("```") {
+                flushParagraph()
+                var codeLines: [String] = []
+                i += 1
+                while i < lines.count && !lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+                    codeLines.append(lines[i])
+                    i += 1
+                }
+                if !codeLines.isEmpty {
+                    blocks.append(.code(codeLines.joined(separator: "\n")))
+                }
+                i += 1
+                continue
+            }
+
+            // Heading
+            if let match = trimmed.firstMatch(of: /^(#{1,4})\s+(.+)$/) {
+                flushParagraph()
+                let level = match.1.count
+                let content = String(match.2)
+                blocks.append(.heading(level, content))
+                i += 1
+                continue
+            }
+
+            // Bullet point
+            if let match = trimmed.firstMatch(of: /^[\*\-]\s+(.+)$/) {
+                flushParagraph()
+                blocks.append(.bullet(String(match.1)))
+                i += 1
+                continue
+            }
+
+            // Regular text - add to paragraph buffer
+            paragraphBuffer.append(trimmed)
+            i += 1
+        }
+
+        flushParagraph()
+        return blocks
+    }
+}
+
+private enum MarkdownBlock {
+    case heading(Int, String)
+    case bullet(String)
+    case code(String)
+    case paragraph(String)
+}
+
+// MARK: - Typing Indicator
+
+struct TypingIndicatorView: View {
+    @State private var animatingIndex = 0
+    private let timer = Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        HStack(alignment: .top) {
+            HStack(spacing: 4) {
+                ForEach(0..<3, id: \.self) { index in
+                    Circle()
+                        .fill(Color.secondary)
+                        .frame(width: 6, height: 6)
+                        .opacity(animatingIndex == index ? 1 : 0.3)
+                        .scaleEffect(animatingIndex == index ? 1.2 : 1.0)
+                }
+            }
+            .padding(.horizontal, Spacing.lg)
+            .padding(.vertical, Spacing.md)
+            .background(Color.assistantBubble)
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous))
+
+            Spacer()
+        }
+        .onReceive(timer) { _ in
+            withAnimation(AppAnimation.quick) {
+                animatingIndex = (animatingIndex + 1) % 3
+            }
+        }
+    }
+}
+
+#Preview("Message List") {
+    MessageListView(
+        history: [
+            .user("Hello, can you help me with this project?"),
+            .gemini("""
+            Of course! I'd be happy to help.
+
+            ### What I Can Do
+
+            * **Read** and analyze files
+            * *Write* new code
+            * Run `commands`
+
+            Here's some code:
+
+            ```swift
+            func hello() {
+                print("Hello!")
+            }
+            ```
+            """),
+            .user("I need to create a new feature"),
+            .toolGroup([
+                ToolCall(
+                    callId: "1",
+                    name: "read_file",
+                    description: "Reading src/main.swift",
+                    status: "success",
+                    resultDisplay: nil,
+                    confirmationDetails: nil,
+                    correlationId: nil
+                )
+            ])
+        ],
+        pending: [],
+        streamingState: .responding,
+        isTrustedFolder: false,
+        onConfirm: { _, _, _ in }
+    )
+}
+</file>
+
+<file path="gemini-app/Views/NewChatView.swift">
+import SwiftUI
+
+struct NewChatView: View {
+    let recentProjects: [String]
+    let initialProject: String?
+    let initialProvider: Provider
+    let composerDisabled: Bool
+    let connected: Bool
+    let status: InstanceStatus?
+    let onProjectSelected: (String, Provider, Bool, String) -> Void  // path, provider, yolo, model
+    let onSubmitMessage: (String) -> Void
+    let onCancel: (() -> Void)?
+    let onOpenSettings: () -> Void
+    let sessionStore: SessionStore
+
+    @State private var selectedProject: String = ""
+    @State private var didSendMessage = false
+    @State private var showBrowser = false
+    @State private var selectedProvider: Provider = .gemini
+    @State private var sudoMode: Bool = false
+    @State private var selectedModel: String = Provider.gemini.defaultModel
+    @State private var hasInitialized = false
+
+    private var isConnecting: Bool {
+        status == .connecting
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Hero section - centered in available space
+            VStack(spacing: Spacing.lg) {
+                Spacer()
+
+                // Animated icon (or offline icon)
+                ZStack {
+                    if !connected {
+                        Image(systemName: "wifi.exclamationmark")
+                            .font(.system(size: 48))
+                            .foregroundStyle(Color.statusError.gradient)
+                    } else if isConnecting {
+                        ConnectionAnimationView()
+                    } else {
+                        Image(systemName: selectedProvider.icon)
+                            .font(.system(size: 48))
+                            .foregroundStyle(Color.accentColor.gradient)
+                    }
+                }
+                .frame(height: 80)
+
+                Text(!connected ? "Server Offline" : (isConnecting ? "Connecting..." : "Let's build"))
+                    .font(.heroTitle)
+                    .animation(.easeInOut, value: isConnecting)
+                    .animation(.easeInOut, value: connected)
+
+                if !connected {
+                    // Offline message with Settings button
+                    VStack(spacing: Spacing.sm) {
+                        Text("Cannot connect to backend server")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+
+                        Button(action: onOpenSettings) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "gear")
+                                    .font(.caption.weight(.medium))
+                                Text("Open Settings")
+                                    .font(.caption.weight(.medium))
+                            }
+                            .padding(.horizontal, Spacing.md)
+                            .padding(.vertical, 6)
+                            .background(Color.accentColor)
+                            .foregroundColor(.white)
+                            .cornerRadius(CornerRadius.small)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .frame(maxWidth: 260)
+                } else {
+                    // Provider picker
+                    Picker("Provider", selection: $selectedProvider) {
+                        ForEach(Provider.allCases, id: \.self) { provider in
+                            Label(provider.displayName, systemImage: provider.icon)
+                                .tag(provider)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 260)
+                    .disabled(!connected)
+                    .onChange(of: selectedProvider) { _, newProvider in
+                        // Update model to provider default
+                        selectedModel = newProvider.defaultModel
+                        // When provider changes and a project is already selected,
+                        // re-spawn with the new provider
+                        if !selectedProject.isEmpty {
+                            onProjectSelected(selectedProject, newProvider, sudoMode, selectedModel)
+                        }
+                    }
+
+                    Toggle(isOn: $sudoMode) {
+                        Label("Sudo", systemImage: "bolt.shield")
+                            .font(.subheadline)
+                    }
+                    .toggleStyle(.switch)
+                    .frame(maxWidth: 260)
+                    .disabled(!connected)
+
+                    ModelSelectorView(
+                        currentModel: selectedModel,
+                        availableModels: selectedProvider.defaultModels,
+                        disabled: isConnecting,
+                        onSelect: { model in
+                            selectedModel = model
+                        }
+                    )
+                    .opacity(connected ? 1.0 : 0.5)
+
+                    ProjectSelectorView(
+                        selectedProject: $selectedProject,
+                        recentProjects: recentProjects,
+                        disabled: isConnecting || !connected,
+                        onSelect: { path in
+                            onProjectSelected(path, selectedProvider, sudoMode, selectedModel)
+                        },
+                        onBrowse: {
+                            showBrowser = true
+                        }
+                    )
+                    .frame(maxWidth: 400)
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, Spacing.lg)
+            .layoutPriority(1)
+
+            Spacer(minLength: 0)
+
+            ComposerView(
+                disabled: composerDisabled || selectedProject.isEmpty,
+                streamingState: .idle,
+                maxLines: 4,
+                onSubmit: { text in
+                    didSendMessage = true
+                    onSubmitMessage(text)
+                },
+                onInterrupt: nil
+            )
+        }
+        .onAppear {
+            guard !hasInitialized else { return }
+            hasInitialized = true
+            selectedProvider = initialProvider
+            selectedModel = initialProvider.defaultModel
+            if let initial = initialProject {
+                selectedProject = initial
+            }
+        }
+        .onChange(of: initialProject) { _, newValue in
+            if let newValue = newValue {
+                selectedProject = newValue
+            }
+        }
+        .onDisappear {
+            // Terminate instance if navigating away without sending a message
+            if !didSendMessage {
+                onCancel?()
+            }
+        }
+        .sheet(isPresented: $showBrowser) {
+            DirectoryBrowserView(
+                isPresented: $showBrowser,
+                onSelect: { path in
+                    selectedProject = path
+                    onProjectSelected(path, selectedProvider, sudoMode, selectedModel)
+                },
+                sessionStore: sessionStore
+            )
+        }
+    }
+}
+
+// MARK: - Connection Animation
+
+struct ConnectionAnimationView: View {
+    @State private var isAnimating = false
+    @State private var rotation: Double = 0
+
+    var body: some View {
+        ZStack {
+            // Outer pulsing ring
+            Circle()
+                .stroke(Color.accentColor.opacity(0.3), lineWidth: 2)
+                .frame(width: 70, height: 70)
+                .scaleEffect(isAnimating ? 1.2 : 0.9)
+                .opacity(isAnimating ? 0 : 0.8)
+
+            // Middle rotating ring
+            Circle()
+                .trim(from: 0, to: 0.7)
+                .stroke(
+                    AngularGradient(
+                        colors: [Color.accentColor, Color.accentColor.opacity(0.3)],
+                        center: .center
+                    ),
+                    style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                )
+                .frame(width: 55, height: 55)
+                .rotationEffect(.degrees(rotation))
+
+            // Inner sparkle icon
+            Image(systemName: "sparkles")
+                .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(Color.accentColor)
+                .scaleEffect(isAnimating ? 1.1 : 0.95)
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true)) {
+                isAnimating = true
+            }
+            withAnimation(.linear(duration: 1.5).repeatForever(autoreverses: false)) {
+                rotation = 360
+            }
+        }
+    }
+}
+
+#Preview {
+    @Previewable @State var store = SessionStore()
+    NewChatView(
+        recentProjects: [
+            "/Users/test/my-project",
+            "/Users/test/another-project"
+        ],
+        initialProject: nil,
+        initialProvider: .gemini,
+        composerDisabled: false,
+        connected: false,
+        status: .connecting,
+        onProjectSelected: { _, _, _, _ in },
+        onSubmitMessage: { _ in },
+        onCancel: nil,
+        onOpenSettings: { },
+        sessionStore: store
+    )
+}
+</file>
+
+<file path="gemini-app/Views/OfflineComponents.swift">
+import SwiftUI
+
+/// Large offline banner for sidebar - shows server offline status with Settings button
+struct OfflineBannerView: View {
+    let onOpenSettings: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            HStack(spacing: Spacing.sm) {
+                Image(systemName: "wifi.exclamationmark")
+                    .font(.body.weight(.semibold))
+                    .foregroundColor(.statusError)
+
+                Text("Server Offline")
+                    .font(.body.weight(.semibold))
+                    .foregroundColor(.primary)
+
+                Spacer()
+            }
+
+            Text("Cannot connect to backend server. Check your server configuration in Settings.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button(action: onOpenSettings) {
+                HStack(spacing: 6) {
+                    Image(systemName: "gear")
+                        .font(.caption.weight(.medium))
+                    Text("Open Settings")
+                        .font(.caption.weight(.medium))
+                }
+                .padding(.horizontal, Spacing.md)
+                .padding(.vertical, 6)
+                .background(Color.accentColor)
+                .foregroundColor(.white)
+                .cornerRadius(CornerRadius.small)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(Spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: CornerRadius.medium)
+                .fill(Color.statusError.opacity(0.1))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: CornerRadius.medium)
+                .stroke(Color.statusError.opacity(0.3), lineWidth: 1)
+        )
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm)
+    }
+}
+
+/// Slim connection status banner for conversation view - shows reconnecting state with retry button
+struct ConnectionStatusBanner: View {
+    let onRetry: () -> Void
+    let onOpenSettings: () -> Void
+    @State private var isRetrying = false
+
+    var body: some View {
+        HStack(spacing: Spacing.md) {
+            // Pulsing icon
+            Image(systemName: "wifi.exclamationmark")
+                .font(.body)
+                .foregroundColor(.statusConnecting)
+                .opacity(isRetrying ? 0.5 : 1.0)
+                .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: isRetrying)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(isRetrying ? "Reconnecting..." : "Server Offline")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundColor(.primary)
+
+                Text("Cannot connect to backend server")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Spacer()
+
+            // Retry button
+            Button(action: {
+                guard !isRetrying else { return }
+                isRetrying = true
+                onRetry()
+
+                // Reset after 2 seconds to prevent spam
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    isRetrying = false
+                }
+            }) {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.caption.weight(.medium))
+                    Text("Retry")
+                        .font(.caption.weight(.medium))
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(isRetrying ? Color.secondary.opacity(0.2) : Color.accentColor.opacity(0.2))
+                .foregroundColor(isRetrying ? .secondary : .accentColor)
+                .cornerRadius(CornerRadius.small)
+            }
+            .buttonStyle(.plain)
+            .disabled(isRetrying)
+
+            // Settings button
+            Button(action: onOpenSettings) {
+                Image(systemName: "gear")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+                    .padding(4)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, Spacing.md)
+        .padding(.vertical, Spacing.sm)
+        .background(Color.statusConnecting.opacity(0.1))
+        .overlay(
+            Rectangle()
+                .frame(height: 1)
+                .foregroundColor(Color.statusConnecting.opacity(0.3)),
+            alignment: .bottom
+        )
+    }
+}
+
+#Preview("Offline Banner") {
+    OfflineBannerView(onOpenSettings: {})
+        .padding()
+}
+
+#Preview("Connection Status Banner") {
+    ConnectionStatusBanner(onRetry: {}, onOpenSettings: {})
+}
+</file>
+
+<file path="gemini-app/Views/ProjectSelectorView.swift">
+import SwiftUI
+
+struct ProjectSelectorView: View {
+    @Binding var selectedProject: String
+    let recentProjects: [String]
+    let disabled: Bool
+    let onSelect: (String) -> Void
+    let onBrowse: () -> Void
+
+    @State private var isExpanded = false
+
+    init(
+        selectedProject: Binding<String>,
+        recentProjects: [String],
+        disabled: Bool,
+        onSelect: @escaping (String) -> Void,
+        onBrowse: @escaping () -> Void = {}
+    ) {
+        self._selectedProject = selectedProject
+        self.recentProjects = recentProjects
+        self.disabled = disabled
+        self.onSelect = onSelect
+        self.onBrowse = onBrowse
+    }
+
+    private var displayName: String {
+        if selectedProject.isEmpty {
+            return "Select a project..."
+        }
+        return selectedProject.split(separator: "/").last.map(String.init) ?? selectedProject
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            // Main selector button
+            Button {
+                withAnimation(AppAnimation.spring) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack {
+                    Image(systemName: "folder.fill")
+                        .foregroundStyle(selectedProject.isEmpty ? .secondary : Color.accentColor)
+
+                    Text(displayName)
+                        .foregroundStyle(selectedProject.isEmpty ? .secondary : .primary)
+
+                    Spacer()
+
+                    Image(systemName: "chevron.down")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 180 : 0))
+                }
+                .padding(.horizontal, Spacing.lg)
+                .padding(.vertical, Spacing.md)
+                .background(Color.surfaceSecondary)
+                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(disabled)
+
+            // Expanded menu
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    // Browse button
+                    Button {
+                        onBrowse()
+                        withAnimation(AppAnimation.spring) {
+                            isExpanded = false
+                        }
+                    } label: {
+                        HStack(spacing: Spacing.sm) {
+                            Image(systemName: "folder.badge.gearshape")
+                                .font(.subheadline)
+                                .foregroundStyle(Color.accentColor)
+
+                            Text("Browse Folders...")
+                                .fontWeight(.medium)
+                                .foregroundStyle(Color.accentColor)
+
+                            Spacer()
+
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .padding(.horizontal, Spacing.md)
+                        .padding(.vertical, Spacing.md)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    // Recent projects
+                    if !recentProjects.isEmpty {
+                        Divider()
+                            .padding(.vertical, Spacing.xs)
+
+                        Text("Recent Projects")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, Spacing.md)
+                            .padding(.bottom, Spacing.xs)
+
+                        ForEach(recentProjects, id: \.self) { project in
+                            Button {
+                                selectProject(project)
+                            } label: {
+                                HStack(spacing: Spacing.sm) {
+                                    Image(systemName: "clock.arrow.circlepath")
+                                        .font(.caption)
+                                        .foregroundStyle(.tertiary)
+
+                                    Text(projectDisplayName(project))
+                                        .lineLimit(1)
+
+                                    Spacer()
+
+                                    if project == selectedProject {
+                                        Image(systemName: "checkmark")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(Color.accentColor)
+                                    }
+                                }
+                                .padding(.horizontal, Spacing.md)
+                                .padding(.vertical, Spacing.sm)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+
+                            if project != recentProjects.last {
+                                Divider()
+                                    .padding(.leading, 36)
+                            }
+                        }
+                    }
+                }
+                .background(Color.surfaceSecondary)
+                .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    private func projectDisplayName(_ path: String) -> String {
+        path.split(separator: "/").last.map(String.init) ?? path
+    }
+
+    private func selectProject(_ project: String) {
+        selectedProject = project
+        onSelect(project)
+        withAnimation(AppAnimation.spring) {
+            isExpanded = false
+        }
+    }
+}
+
+// MARK: - Directory Browser Sheet
+
+struct DirectoryBrowserView: View {
+    @Binding var isPresented: Bool
+    let onSelect: (String) -> Void
+    let sessionStore: SessionStore
+
+    @State private var navigationPath: [DirectoryListing] = []
+    @State private var rootListing: DirectoryListing?
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var hasLoadedInitial = false
+
+    private var currentListing: DirectoryListing? {
+        navigationPath.last ?? rootListing
+    }
+
+    private var canGoBack: Bool {
+        !navigationPath.isEmpty
+    }
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if isLoading && currentListing == nil {
+                    ProgressView("Loading...")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let error = errorMessage, currentListing == nil {
+                    ContentUnavailableView {
+                        Label("Error", systemImage: "exclamationmark.triangle")
+                    } description: {
+                        Text(error)
+                    } actions: {
+                        Button("Retry") {
+                            Task { await loadDirectory(nil, isRoot: true) }
+                        }
+                    }
+                } else if let listing = currentListing {
+                    directoryList(listing)
+                } else {
+                    ProgressView("Loading...")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+            }
+            .navigationTitle(currentListing?.name ?? "Select Project")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    if canGoBack {
+                        Button {
+                            goBack()
+                        } label: {
+                            HStack(spacing: Spacing.xxs) {
+                                Image(systemName: "chevron.left")
+                                    .fontWeight(.semibold)
+                                if let parentName = getParentName() {
+                                    Text(parentName)
+                                        .lineLimit(1)
+                                }
+                            }
+                        }
+                    } else {
+                        Button("Cancel") {
+                            isPresented = false
+                        }
+                    }
+                }
+                if isLoading {
+                    ToolbarItem(placement: .primaryAction) {
+                        ProgressView()
+                    }
+                }
+            }
+        }
+        .onAppear {
+            if !hasLoadedInitial {
+                hasLoadedInitial = true
+                Task { await loadDirectory(nil, isRoot: true) }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func directoryList(_ listing: DirectoryListing) -> some View {
+        List {
+            // Current directory info with select button
+            Section {
+                HStack {
+                    VStack(alignment: .leading, spacing: Spacing.xxs) {
+                        Text(listing.name)
+                            .font(.headline)
+                        Text(listing.path)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+
+                    Spacer()
+
+                    Button("Select") {
+                        onSelect(listing.path)
+                        isPresented = false
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+            }
+
+            // Subdirectories
+            Section {
+                ForEach(listing.directories) { dir in
+                    Button {
+                        navigateForward(to: dir.path)
+                    } label: {
+                        HStack(spacing: Spacing.sm) {
+                            Image(systemName: "folder.fill")
+                                .font(.body)
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 24)
+
+                            Text(dir.name)
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+
+                            Spacer()
+
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isLoading)
+                }
+
+                if listing.directories.isEmpty {
+                    Text("No subdirectories")
+                        .foregroundStyle(.secondary)
+                        .font(.subheadline)
+                }
+            } header: {
+                Text("Folders")
+            }
+        }
+        .listStyle(.insetGrouped)
+    }
+
+    private func getParentName() -> String? {
+        if navigationPath.count >= 2 {
+            return navigationPath[navigationPath.count - 2].name
+        } else if navigationPath.count == 1 {
+            return rootListing?.name
+        }
+        return nil
+    }
+
+    private func goBack() {
+        guard !navigationPath.isEmpty else { return }
+        withAnimation {
+            _ = navigationPath.removeLast()
+        }
+    }
+
+    private func navigateForward(to path: String) {
+        Task {
+            await loadDirectory(path, isRoot: false)
+        }
+    }
+
+    private func loadDirectory(_ path: String?, isRoot: Bool) async {
+        isLoading = true
+        errorMessage = nil
+
+        let result = await sessionStore.browseDirectory(path)
+
+        if let listing = result {
+            withAnimation {
+                if isRoot {
+                    rootListing = listing
+                    navigationPath = []
+                } else {
+                    navigationPath.append(listing)
+                }
+            }
+            errorMessage = nil
+        } else {
+            if currentListing == nil {
+                errorMessage = "Failed to load directory"
+            }
+        }
+        isLoading = false
+    }
+}
+
+#Preview {
+    VStack {
+        ProjectSelectorView(
+            selectedProject: .constant(""),
+            recentProjects: [
+                "/Users/test/my-project",
+                "/Users/test/another-project",
+                "/Users/test/third-project"
+            ],
+            disabled: false,
+            onSelect: { _ in },
+            onBrowse: {}
+        )
+        .padding()
+
+        Spacer()
+    }
+}
+</file>
+
+<file path="gemini-app/Views/SettingsView.swift">
+import SwiftUI
+
+struct SettingsView: View {
+    let onServerChanged: () -> Void
+
+    @State private var serverURL: String = SessionService.defaultServerURL
+    @State private var urlHistory: [String] = SessionService.serverURLHistory
+    @State private var newURL = ""
+    @State private var isAddingServer = false
+    @State private var showCopied = false
+    @State private var isValidating = false
+    @State private var validationError: String?
+    @State private var validatingURL: String?
+    @State private var showDeleteConfirmation = false
+    @State private var urlToDelete: String?
+    @FocusState private var isURLFocused: Bool
+    @Environment(\.dismiss) private var dismiss
+
+    private var hasServerChanged: Bool {
+        serverURL != SessionService.defaultServerURL
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    // URL picker from history
+                    ForEach(urlHistory, id: \.self) { url in
+                        serverRow(for: url)
+                    }
+                    .onDelete { indexSet in
+                        deleteServers(at: indexSet)
+                    }
+
+                    // Add new server - inline
+                    if isAddingServer {
+                        addServerInputRow
+                    } else {
+                        addServerButton
+                    }
+                } header: {
+                    Text("Server")
+                } footer: {
+                    if let error = validationError {
+                        Text(error)
+                            .foregroundStyle(Color.statusError)
+                    } else {
+                        Text("Select a server or add a new one. Swipe or long-press to delete.")
+                    }
+                }
+
+                Section {
+                    Button("Reset to Default") {
+                        serverURL = AppConstants.defaultServerURL
+                        if !urlHistory.contains(serverURL) {
+                            urlHistory.insert(serverURL, at: 0)
+                            SessionService.serverURLHistory = urlHistory
+                        }
+                    }
+                    .foregroundStyle(Color.accentColor)
+                }
+            }
+            .navigationTitle("Settings")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        saveAndDismiss()
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(isValidating)
+                }
+            }
+            .confirmationDialog(
+                "Delete Server",
+                isPresented: $showDeleteConfirmation,
+                presenting: urlToDelete
+            ) { url in
+                Button("Delete", role: .destructive) {
+                    deleteServer(url)
+                }
+                Button("Cancel", role: .cancel) {
+                    urlToDelete = nil
+                }
+            } message: { url in
+                Text("Are you sure you want to remove \(URL(string: url)?.host ?? url)?")
+            }
+        }
+        .onAppear {
+            serverURL = SessionService.defaultServerURL
+            urlHistory = SessionService.serverURLHistory
+        }
+    }
+
+    // MARK: - Server Row
+
+    @ViewBuilder
+    private func serverRow(for url: String) -> some View {
+        HStack {
+            Button {
+                selectServer(url)
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: Spacing.xxs) {
+                        Text(URL(string: url)?.host ?? url)
+                            .foregroundStyle(.primary)
+                        if let port = URL(string: url)?.port {
+                            Text("Port \(String(port))")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+
+                    if validatingURL == url && isValidating {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                    } else if url == serverURL {
+                        Image(systemName: "checkmark")
+                            .foregroundStyle(Color.accentColor)
+                            .fontWeight(.semibold)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(isValidating)
+
+            // Copy button for selected URL
+            if url == serverURL && !isValidating {
+                Button {
+                    copyURL(url)
+                } label: {
+                    Image(systemName: showCopied ? "checkmark" : "doc.on.doc")
+                        .font(.caption)
+                        .foregroundStyle(showCopied ? Color.statusConnected : .secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .contextMenu {
+            Button(role: .destructive) {
+                urlToDelete = url
+                showDeleteConfirmation = true
+            } label: {
+                Label("Delete Server", systemImage: "trash")
+            }
+
+            Button {
+                copyURL(url)
+            } label: {
+                Label("Copy URL", systemImage: "doc.on.doc")
+            }
+        }
+    }
+
+    // MARK: - Add Server Views
+
+    @ViewBuilder
+    private var addServerInputRow: some View {
+        HStack(spacing: Spacing.sm) {
+            TextField("http://host:7337", text: $newURL)
+                .textFieldStyle(.plain)
+                .textContentType(.URL)
+                .autocorrectionDisabled()
+                #if os(iOS)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                #endif
+                .focused($isURLFocused)
+                .onSubmit {
+                    submitNewURL()
+                }
+                .disabled(isValidating)
+
+            if isValidating && validatingURL == nil {
+                ProgressView()
+                    .scaleEffect(0.8)
+            } else if !newURL.isEmpty {
+                Button {
+                    submitNewURL()
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
+                .disabled(isValidating)
+            }
+
+            Button {
+                isAddingServer = false
+                newURL = ""
+                validationError = nil
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    @ViewBuilder
+    private var addServerButton: some View {
+        Button {
+            isAddingServer = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                isURLFocused = true
+            }
+        } label: {
+            Label("Add Server", systemImage: "plus.circle.fill")
+                .foregroundStyle(Color.accentColor)
+        }
+    }
+
+    // MARK: - Actions
+
+    private func selectServer(_ url: String) {
+        guard url != serverURL else { return }
+
+        validationError = nil
+        validatingURL = url
+        isValidating = true
+
+        Task {
+            let result = await SessionService.validateServer(url)
+
+            await MainActor.run {
+                isValidating = false
+                validatingURL = nil
+
+                switch result {
+                case .success:
+                    serverURL = url
+                    validationError = nil
+                case .failure(let error):
+                    validationError = "Cannot connect to \(URL(string: url)?.host ?? url): \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func submitNewURL() {
+        let trimmed = newURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        // Ensure URL has scheme
+        var urlToAdd = trimmed
+        if !urlToAdd.hasPrefix("http://") && !urlToAdd.hasPrefix("https://") {
+            urlToAdd = "http://" + urlToAdd
+        }
+
+        validationError = nil
+        validatingURL = nil
+        isValidating = true
+
+        Task {
+            let result = await SessionService.validateServer(urlToAdd)
+
+            await MainActor.run {
+                isValidating = false
+
+                switch result {
+                case .success:
+                    SessionService.addToServerURLHistory(urlToAdd)
+                    urlHistory = SessionService.serverURLHistory
+                    serverURL = urlToAdd
+                    newURL = ""
+                    isAddingServer = false
+                    validationError = nil
+                case .failure(let error):
+                    validationError = "Cannot connect: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func saveAndDismiss() {
+        let serverChanged = hasServerChanged
+        SessionService.defaultServerURL = serverURL
+        dismiss()
+
+        if serverChanged {
+            onServerChanged()
+        }
+    }
+
+    private func copyURL(_ url: String) {
+        #if os(iOS)
+        UIPasteboard.general.string = url
+        #else
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
+        #endif
+        withAnimation {
+            showCopied = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            withAnimation {
+                showCopied = false
+            }
+        }
+    }
+
+    private func deleteServers(at indexSet: IndexSet) {
+        urlHistory.remove(atOffsets: indexSet)
+        SessionService.serverURLHistory = urlHistory
+
+        // If deleted URL was selected, select first available
+        if !urlHistory.contains(serverURL), let first = urlHistory.first {
+            serverURL = first
+        }
+    }
+
+    private func deleteServer(_ url: String) {
+        guard let index = urlHistory.firstIndex(of: url) else { return }
+        urlHistory.remove(at: index)
+        SessionService.serverURLHistory = urlHistory
+
+        // If deleted URL was selected, select first available
+        if serverURL == url, let first = urlHistory.first {
+            serverURL = first
+        }
+
+        urlToDelete = nil
+    }
+}
+
+#Preview {
+    SettingsView(onServerChanged: {})
+}
+</file>
+
+<file path="gemini-app/Views/SidebarView.swift">
+import SwiftUI
+
+struct SidebarView: View {
+    let instances: [InstanceState]
+    let activeInstanceId: String?
+    let connected: Bool
+    let onSelectInstance: (String) -> Void
+    let onNewChat: (String) -> Void
+    let onNewProject: () -> Void
+    let onTerminate: (String) -> Void
+    let onOpenSettings: () -> Void
+
+    private var groupedInstances: [String: [InstanceState]] {
+        Dictionary(grouping: instances) { $0.projectPath }
+    }
+
+    var body: some View {
+        List {
+            // Offline banner
+            if !connected {
+                OfflineBannerView(onOpenSettings: onOpenSettings)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+
+            // New project button (only when connected)
+            if connected {
+                Button {
+                    onNewProject()
+                } label: {
+                    Label("New Project", systemImage: "plus.circle.fill")
+                        .foregroundStyle(Color.accentColor)
+                }
+                .buttonStyle(.plain)
+            }
+
+            // Grouped instances by project
+            ForEach(groupedInstances.keys.sorted(), id: \.self) { projectPath in
+                if let projectInstances = groupedInstances[projectPath] {
+                    Section {
+                        ForEach(projectInstances) { instance in
+                            InstanceRowView(
+                                instance: instance,
+                                isActive: instance.id == activeInstanceId,
+                                onSelect: {
+                                    onSelectInstance(instance.id)
+                                }
+                            )
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    onTerminate(instance.id)
+                                } label: {
+                                    Label("Close", systemImage: "xmark.circle")
+                                }
+                            }
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    onTerminate(instance.id)
+                                } label: {
+                                    Label("Close Chat", systemImage: "xmark.circle")
+                                }
+                            }
+                        }
+
+                        // New chat in this project
+                        Button {
+                            onNewChat(projectPath)
+                        } label: {
+                            Label("New Chat", systemImage: "plus")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    } header: {
+                        HStack(spacing: Spacing.xs) {
+                            Image(systemName: "folder.fill")
+                                .font(.caption)
+                                .foregroundStyle(Color.accentColor.opacity(0.8))
+                            Text(projectName(from: projectPath))
+                                .font(.sectionHeader)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.top, Spacing.xs)
+                    }
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .navigationTitle("Chats")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+    }
+
+    private func projectName(from path: String) -> String {
+        path.split(separator: "/").last.map(String.init) ?? path
+    }
+}
+
+struct InstanceRowView: View {
+    let instance: InstanceState
+    let isActive: Bool
+    let onSelect: () -> Void
+
+    private var statusColor: Color {
+        switch instance.status {
+        case .connected: return .statusConnected
+        case .connecting: return .statusConnecting
+        case .disconnected, .error: return .statusError
+        }
+    }
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: Spacing.sm) {
+                // Provider icon + status indicator
+                ZStack(alignment: .bottomTrailing) {
+                    Image(systemName: instance.provider.icon)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 16, height: 16)
+                    Circle()
+                        .fill(statusColor)
+                        .frame(width: 6, height: 6)
+                        .offset(x: 2, y: 2)
+                }
+
+                // Chat label
+                VStack(alignment: .leading, spacing: Spacing.xxs) {
+                    Text(chatLabel)
+                        .font(.subheadline)
+                        .lineLimit(1)
+
+                    if let error = instance.error {
+                        Text(error)
+                            .font(.caption2)
+                            .foregroundStyle(Color.statusError)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer()
+            }
+            .padding(.vertical, Spacing.xs)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .listRowBackground(
+            isActive
+                ? Color.accentColor.opacity(0.12)
+                : nil
+        )
+    }
+
+    private var chatLabel: String {
+        if instance.history.isEmpty {
+            return "New Chat"
+        }
+        // Get first user message as label
+        for message in instance.history {
+            if case .user(let text) = message {
+                return String(text.prefix(40))
+            }
+        }
+        return "Chat"
+    }
+}
+
+#Preview {
+    NavigationStack {
+        SidebarView(
+            instances: [
+                InstanceState(
+                    id: "1",
+                    projectPath: "/Users/test/my-project",
+                    status: .connected,
+                    history: [.user("Hello there, can you help me?")],
+                    pending: [],
+                    streamingState: .idle,
+                    isTrustedFolder: false,
+                    currentModel: AppConstants.defaultModel,
+                    availableModels: [],
+                    error: nil
+                ),
+                InstanceState(
+                    id: "2",
+                    projectPath: "/Users/test/my-project",
+                    status: .connecting,
+                    history: [],
+                    pending: [],
+                    streamingState: .idle,
+                    isTrustedFolder: false,
+                    currentModel: AppConstants.defaultModel,
+                    availableModels: [],
+                    error: nil
+                ),
+                InstanceState(
+                    id: "3",
+                    projectPath: "/Users/test/another-project",
+                    status: .error,
+                    history: [],
+                    pending: [],
+                    streamingState: .idle,
+                    isTrustedFolder: false,
+                    currentModel: AppConstants.defaultModel,
+                    availableModels: [],
+                    error: "Connection failed"
+                )
+            ],
+            activeInstanceId: "1",
+            connected: false,
+            onSelectInstance: { _ in },
+            onNewChat: { _ in },
+            onNewProject: { },
+            onTerminate: { _ in },
+            onOpenSettings: { }
+        )
+    }
+}
+</file>
+
+<file path="gemini-app/Views/ToolGroupView.swift">
+import SwiftUI
+
+struct ToolGroupView: View {
+    let tools: [ToolCall]
+    let isTrustedFolder: Bool
+    let onConfirm: (String, ConfirmOutcome, String?) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            ForEach(tools) { tool in
+                ToolCallView(
+                    tool: tool,
+                    isTrustedFolder: isTrustedFolder,
+                    onConfirm: onConfirm
+                )
+            }
+        }
+        .padding(Spacing.md)
+        .cardStyle()
+    }
+}
+
+struct ToolCallView: View {
+    let tool: ToolCall
+    let isTrustedFolder: Bool
+    let onConfirm: (String, ConfirmOutcome, String?) -> Void
+
+    @State private var isExpanded = false
+
+    private var hasContent: Bool {
+        tool.description != nil || tool.renderedResult != nil
+    }
+
+    private var statusName: String {
+        (tool.status ?? "pending").lowercased()
+    }
+
+    private var statusColor: Color {
+        switch statusName {
+        case "pending": return .toolPending
+        case "executing": return .toolExecuting
+        case "success": return .toolSuccess
+        case "error": return .toolError
+        case "confirming": return .toolConfirming
+        default: return .toolPending
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.sm) {
+            // Header
+            HStack(spacing: Spacing.sm) {
+                // Expand button
+                if hasContent {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .animation(AppAnimation.quick, value: isExpanded)
+                } else {
+                    Spacer()
+                        .frame(width: 12)
+                }
+
+                // Tool icon
+                Image(systemName: toolIcon)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                // Tool name
+                Text(tool.name)
+                    .font(.subheadline.weight(.medium))
+
+                Spacer()
+
+                // Status badge
+                Text(tool.status ?? "pending")
+                    .statusBadgeStyle(color: statusColor)
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if hasContent {
+                    withAnimation(AppAnimation.spring) {
+                        isExpanded.toggle()
+                    }
+                }
+            }
+
+            // Expanded content
+            if isExpanded && hasContent {
+                VStack(alignment: .leading, spacing: Spacing.sm) {
+                    if let description = tool.description {
+                        Text(description)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    if let resultText = tool.renderedResult {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            Text(resultText)
+                                .font(.codeBlock)
+                                .foregroundStyle(.primary)
+                        }
+                        .frame(maxHeight: 200)
+                        .padding(Spacing.sm)
+                        .background(Color.surfaceTertiary)
+                        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
+                    }
+                }
+                .padding(.leading, Spacing.xl)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            // Confirmation actions
+            if statusName == "confirming", let details = tool.confirmationDetails {
+                ConfirmationView(
+                    details: details,
+                    isTrustedFolder: isTrustedFolder
+                ) { outcome in
+                    onConfirm(tool.callId, outcome, tool.correlationId)
+                }
+                .padding(.leading, Spacing.xl)
+            }
+        }
+    }
+
+    private var toolIcon: String {
+        switch tool.name.lowercased() {
+        case let n where n.contains("read"): return "doc.text"
+        case let n where n.contains("write"), let n where n.contains("edit"): return "pencil"
+        case let n where n.contains("bash"), let n where n.contains("command"): return "terminal"
+        case let n where n.contains("search"), let n where n.contains("grep"): return "magnifyingglass"
+        case let n where n.contains("list"), let n where n.contains("glob"): return "folder"
+        default: return "gearshape"
+        }
+    }
+}
+
+#Preview {
+    VStack {
+        ToolGroupView(
+            tools: [
+                ToolCall(
+                    callId: "1",
+                    name: "read_file",
+                    description: "Reading src/main.swift",
+                    status: "success",
+                    resultDisplay: .text("File contents here..."),
+                    confirmationDetails: nil,
+                    correlationId: nil
+                ),
+                ToolCall(
+                    callId: "2",
+                    name: "write_file",
+                    description: nil,
+                    status: "confirming",
+                    resultDisplay: nil,
+                    confirmationDetails: ConfirmationDetails(
+                        type: "edit",
+                        title: "Edit file",
+                        command: nil,
+                        rootCommand: nil,
+                        prompt: nil,
+                        toolDisplayName: nil,
+                        toolName: nil,
+                        fileName: "main.swift",
+                        filePath: "/src/main.swift",
+                        fileDiff: "+ new line\n- old line"
+                    ),
+                    correlationId: nil
+                )
+            ],
+            isTrustedFolder: false,
+            onConfirm: { _, _, _ in }
+        )
+        .padding()
+
+        Spacer()
+    }
+}
+</file>
+
+<file path="gemini-app/BackgroundTaskManager.swift">
+import BackgroundTasks
+import os.log
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "gemini-app", category: "BackgroundTaskManager")
+
+/// Manages background task execution for SSE monitoring during backgrounding
+/// Only active on iOS; no-op on macOS
+@MainActor
+final class BackgroundTaskManager {
+    static let shared = BackgroundTaskManager()
+
+    // MARK: - Constants
+
+    private static let processingTaskIdentifier = "com.prem.gemini-app.sse-monitor"
+
+    // MARK: - Background Task Scheduling
+
+    /// Schedule a background processing task to monitor SSE during app suspension
+    /// This extends the app's execution time by ~30 seconds when backgrounded (iOS only)
+    func scheduleBackgroundTask() {
+        #if os(iOS)
+        let request = BGProcessingTaskRequest(identifier: Self.processingTaskIdentifier)
+        request.requiresNetworkConnectivity = true
+
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            logger.info("Background processing task scheduled")
+        } catch {
+            logger.error("Failed to schedule background task: \(error.localizedDescription)")
+        }
+        #endif
+    }
+
+    /// Register background task handler (call from app launch)
+    /// Only active on iOS; no-op on macOS
+    func registerBackgroundTaskHandler() {
+        #if os(iOS)
+        BGTaskScheduler.shared.register(
+            forTaskWithIdentifier: Self.processingTaskIdentifier,
+            using: nil
+        ) { [weak self] task in
+            self?.handleBackgroundTask(task)
+        }
+        logger.info("Background task handler registered")
+        #endif
+    }
+
+    /// Handle the background processing task
+    #if os(iOS)
+    private func handleBackgroundTask(_ task: BGTask) {
+        logger.info("Background task executing")
+
+        // Schedule the next task before this one expires
+        scheduleBackgroundTask()
+
+        // Perform work - the SSE connection maintained by SessionService will
+        // continue streaming events during this ~30 second window
+        // This keeps the app from being fully suspended while conversations complete
+        Task {
+            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
+            task.setTaskCompleted(success: true)
+        }
+    }
+    #endif
+
+    /// Cancel the scheduled background task
+    func cancelBackgroundTask() {
+        #if os(iOS)
+        BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: Self.processingTaskIdentifier)
+        logger.info("Background task cancelled")
+        #endif
+    }
+}
+</file>
+
+<file path="gemini-app/ContentView.swift">
+import SwiftUI
+import os.log
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "gemini-app", category: "ContentView")
+
+struct ContentView: View {
+    @State private var store = SessionStore()
+    @State private var inAppNotificationManager = InAppNotificationManager()
+    @State private var showNewChat = false
+    @State private var showSettings = false
+    @State private var pendingProjectPath: String?
+    @State private var pendingInstanceId: String?
+    @State private var pendingProvider: Provider = .gemini
+    @State private var pendingYolo: Bool = false
+    @State private var pendingModel: String?
+    @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    @State private var navigationPath = NavigationPath()
+
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    private var hasActiveChat: Bool {
+        store.activeInstance != nil && !showNewChat
+    }
+
+    private var isDisabled: Bool {
+        !store.connected || store.activeInstance == nil || store.activeInstance?.status != .connected
+    }
+
+    private var displayStatus: InstanceStatus? {
+        if showNewChat {
+            if pendingProjectPath != nil {
+                if let id = pendingInstanceId, let inst = store.instances[id] {
+                    return inst.status
+                }
+                return .connecting
+            }
+            return nil
+        }
+        return store.activeInstance?.status
+    }
+
+    private var displayProjectPath: String? {
+        if showNewChat {
+            return pendingProjectPath ?? store.instances[pendingInstanceId ?? ""]?.projectPath
+        }
+        return store.activeInstance?.projectPath
+    }
+
+    private var newChatDisabled: Bool {
+        guard showNewChat else { return isDisabled }
+        guard pendingProjectPath != nil else { return true }
+        guard let id = pendingInstanceId, let inst = store.instances[id] else { return true }
+        return inst.status != .connected
+    }
+
+    private var recentProjects: [String] {
+        if let pending = pendingProjectPath {
+            return [pending] + store.recentProjects.filter { $0 != pending }
+        }
+        return store.recentProjects
+    }
+
+    var body: some View {
+        ZStack {
+            Group {
+                if horizontalSizeClass == .compact {
+                    iPhoneLayout
+                } else {
+                    iPadMacLayout
+                }
+            }
+
+            NotificationBadge(
+                manager: inAppNotificationManager,
+                onNotificationTap: { instanceId in
+                    store.activeInstanceId = instanceId
+                    showNewChat = false
+                    navigationPath = NavigationPath()
+                    navigationPath.append(instanceId)
+                    store.setActiveInstance(instanceId)
+                }
+            )
+            .onChange(of: store.activeInstanceId) { _, newInstanceId in
+                if let newInstanceId = newInstanceId {
+                    inAppNotificationManager.notifications.removeAll { $0.instanceId == newInstanceId }
+                }
+            }
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(onServerChanged: {
+                store.switchServer()
+            })
+        }
+        .onAppear {
+            store.connect()
+            store.setInAppNotificationManager(inAppNotificationManager)
+        }
+        .onOpenURL { url in
+            handleNotificationDeepLink(url)
+        }
+    }
+
+    // MARK: - iPhone Layout
+
+    @ViewBuilder
+    private var iPhoneLayout: some View {
+        NavigationStack(path: $navigationPath) {
+            SidebarView(
+                instances: store.sortedInstances,
+                activeInstanceId: store.activeInstanceId,
+                connected: store.connected,
+                onSelectInstance: { id in
+                    store.setActiveInstance(id)
+                    showNewChat = false
+                    navigationPath.append(id)
+                },
+                onNewChat: { projectPath in
+                    handleNewChatFromProject(projectPath)
+                    navigationPath.append("newChat")
+                },
+                onNewProject: {
+                    handleNewProject()
+                    navigationPath.append("newChat")
+                },
+                onTerminate: { instanceId in
+                    store.terminateInstance(instanceId)
+                },
+                onOpenSettings: { showSettings = true }
+            )
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button { showSettings = true } label: { Image(systemName: "gear") }
+                }
+            }
+            .navigationDestination(for: String.self) { value in
+                if value == "newChat" {
+                    newChatScreen
+                } else if let instance = store.instances[value] {
+                    chatDetailView(instance: instance)
+                        .onAppear {
+                            store.setActiveInstance(value)
+                            showNewChat = false
+                        }
+                }
+            }
+        }
+    }
+
+    private var newChatScreen: some View {
+        NewChatView(
+            recentProjects: recentProjects,
+            initialProject: pendingProjectPath,
+            initialProvider: pendingProvider,
+            composerDisabled: newChatDisabled,
+            connected: store.connected,
+            status: displayStatus,
+            onProjectSelected: { path, provider, yolo, model in
+                handleProjectSelected(path, provider: provider, yolo: yolo, model: model)
+            },
+            onSubmitMessage: { msg in
+                if let instanceId = pendingInstanceId {
+                    handleStartChat(msg)
+                    navigationPath.removeLast()
+                    navigationPath.append(instanceId)
+                }
+            },
+            onCancel: {
+                handleCancelNewChat()
+//                navigationPath.removeLast()
+            },
+            onOpenSettings: { showSettings = true },
+            sessionStore: store
+        )
+        .navigationTitle("New Chat")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    // MARK: - iPad/Mac Layout
+
+    @ViewBuilder
+    private var iPadMacLayout: some View {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            SidebarView(
+                instances: store.sortedInstances,
+                activeInstanceId: store.activeInstanceId,
+                connected: store.connected,
+                onSelectInstance: { id in
+                    store.setActiveInstance(id)
+                    showNewChat = false
+                },
+                onNewChat: { projectPath in
+                    handleNewChatFromProject(projectPath)
+                },
+                onNewProject: {
+                    handleNewProject()
+                },
+                onTerminate: { instanceId in
+                    store.terminateInstance(instanceId)
+                },
+                onOpenSettings: { showSettings = true }
+            )
+        } detail: {
+            if showNewChat || !hasActiveChat {
+                newChatScreen
+            } else if let instance = store.activeInstance {
+                chatDetailView(instance: instance)
+            } else {
+                ContentUnavailableView(
+                    "No Chat Selected",
+                    systemImage: "bubble.left.and.bubble.right",
+                    description: Text("Select a chat from the sidebar or start a new one")
+                )
+            }
+        }
+    }
+
+    // MARK: - Chat Detail
+
+    @ViewBuilder
+    private func chatDetailView(instance: InstanceState) -> some View {
+        VStack(spacing: 0) {
+            if !instance.history.isEmpty || !instance.pending.isEmpty {
+                MessageListView(
+                    history: instance.history,
+                    pending: instance.pending,
+                    streamingState: instance.streamingState,
+                    isTrustedFolder: instance.isTrustedFolder,
+                    onConfirm: { callId, outcome, correlationId in
+                        store.sendConfirm(callId: callId, outcome: outcome, correlationId: correlationId)
+                    }
+                )
+            } else {
+                Spacer()
+                Text("Start a conversation").foregroundStyle(.secondary)
+                Spacer()
+            }
+
+            ComposerView(
+                disabled: isDisabled,
+                streamingState: instance.streamingState,
+                maxLines: 6,
+                onSubmit: { text in store.sendSubmit(text) },
+                onInterrupt: { store.sendInterrupt() }
+            )
+        }
+        .ignoresSafeArea(.container, edges: .bottom)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 2) {
+                    Text(projectName(from: instance.projectPath))
+                        .font(.subheadline.weight(.semibold))
+                }
+            }
+        }
+    }
+
+    // MARK: - Handlers
+
+    private func handleProjectSelected(_ projectPath: String, provider: Provider = .gemini, yolo: Bool = false, model: String? = nil) {
+        if let oldId = pendingInstanceId,
+           let oldInst = store.instances[oldId],
+           oldInst.history.isEmpty {
+            store.terminateInstance(oldId)
+            pendingInstanceId = nil
+        }
+
+        showNewChat = true
+        pendingProjectPath = projectPath
+        pendingProvider = provider
+        pendingYolo = yolo
+        pendingModel = model
+
+        Task {
+            let instanceId = await store.spawnInstance(projectPath: projectPath, provider: provider, yolo: yolo)
+            if pendingProjectPath == projectPath && pendingProvider == provider {
+                pendingInstanceId = instanceId
+            }
+        }
+    }
+
+    private func handleStartChat(_ message: String) {
+        guard let instance = showNewChat ? store.instances[pendingInstanceId ?? ""] : store.activeInstance else { return }
+        guard instance.status == .connected else { return }
+
+        if showNewChat, let id = pendingInstanceId {
+            store.setActiveInstance(id)
+        }
+
+        if let model = pendingModel, model != pendingProvider.defaultModel {
+            store.sendSetModel(model)
+        }
+        pendingModel = nil
+
+        store.sendSubmit(message)
+        showNewChat = false
+    }
+
+    private func handleNewChatFromProject(_ projectPath: String) {
+        pendingInstanceId = nil
+        pendingProjectPath = projectPath
+        pendingProvider = .gemini
+        showNewChat = true
+    }
+
+    private func handleNewProject() {
+        pendingProjectPath = nil
+        pendingInstanceId = nil
+        pendingProvider = .gemini
+        showNewChat = true
+    }
+
+    private func handleCancelNewChat() {
+        if let instanceId = pendingInstanceId,
+           let instance = store.instances[instanceId],
+           instance.history.isEmpty {
+            store.terminateInstance(instanceId)
+        }
+        pendingInstanceId = nil
+        pendingProjectPath = nil
+        showNewChat = false
+    }
+
+    private func handleNotificationDeepLink(_ url: URL) {
+        guard url.scheme == "gemini-app" else { return }
+
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: true)
+        guard let queryItems = components?.queryItems else { return }
+
+        var instanceId: String?
+        var action: String?
+
+        for item in queryItems {
+            if item.name == "id" { instanceId = item.value }
+            else if item.name == "action" { action = item.value }
+        }
+
+        guard let instanceId else { return }
+
+        store.setActiveInstance(instanceId)
+        showNewChat = false
+    }
+
+    private func projectName(from path: String) -> String {
+        path.split(separator: "/").last.map(String.init) ?? path
+    }
+}
+
+#Preview {
+    ContentView()
+}
+</file>
+
+<file path="gemini-app/DesignSystem.swift">
+import SwiftUI
+
+// MARK: - App Constants
+
+enum AppConstants {
+    static let defaultServerURL = "http://127.0.0.1:7337"
+    static let defaultModel = "auto-gemini-2.5"
+    static let maxRecentProjects = 10
+}
+
+// MARK: - Spacing
+
+enum Spacing {
+    static let xxs: CGFloat = 2
+    static let xs: CGFloat = 4
+    static let sm: CGFloat = 8
+    static let md: CGFloat = 12
+    static let lg: CGFloat = 16
+    static let xl: CGFloat = 24
+    static let xxl: CGFloat = 32
+}
+
+// MARK: - Corner Radius
+
+enum CornerRadius {
+    static let small: CGFloat = 8
+    static let medium: CGFloat = 12
+    static let large: CGFloat = 16
+    static let pill: CGFloat = 24
+}
+
+// MARK: - Semantic Colors
+
+extension Color {
+    // Status colors
+    static let statusConnected = Color.green
+    static let statusConnecting = Color.orange
+    static let statusError = Color.red
+
+    // Message bubbles
+    static let userBubble = Color.accentColor
+    #if os(iOS)
+    static let assistantBubble = Color(uiColor: .systemGray6)
+    static let surfaceSecondary = Color(uiColor: .systemGray6)
+    static let surfaceTertiary = Color(uiColor: .systemGray5)
+    #else
+    static let assistantBubble = Color(nsColor: .controlBackgroundColor)
+    static let surfaceSecondary = Color(nsColor: .controlBackgroundColor)
+    static let surfaceTertiary = Color(nsColor: .windowBackgroundColor)
+    #endif
+
+    // Tool status
+    static let toolPending = Color.secondary
+    static let toolExecuting = Color.accentColor
+    static let toolSuccess = Color.green
+    static let toolError = Color.red
+    static let toolConfirming = Color.orange
+}
+
+// MARK: - Typography
+
+extension Font {
+    static let heroTitle = Font.largeTitle.weight(.bold)
+    static let sectionHeader = Font.subheadline.weight(.semibold)
+    static let messageBody = Font.body
+    static let messageSender = Font.caption.weight(.medium)
+    static let statusBadge = Font.caption2.weight(.medium)
+    static let codeBlock = Font.system(.caption, design: .monospaced)
+}
+
+// MARK: - Animation
+
+enum AppAnimation {
+    static let spring = Animation.spring(response: 0.35, dampingFraction: 0.7)
+    static let quick = Animation.easeOut(duration: 0.2)
+    static let standard = Animation.easeInOut(duration: 0.25)
+}
+
+// MARK: - View Modifiers
+
+struct MessageBubbleStyle: ViewModifier {
+    let isUser: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, Spacing.lg)
+            .padding(.vertical, Spacing.md)
+            .background(isUser ? Color.userBubble : Color.assistantBubble)
+            .foregroundStyle(isUser ? .white : .primary)
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.large, style: .continuous))
+    }
+}
+
+struct CardStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(Color.surfaceSecondary)
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.medium, style: .continuous))
+    }
+}
+
+struct StatusBadgeStyle: ViewModifier {
+    let color: Color
+
+    func body(content: Content) -> some View {
+        content
+            .font(.statusBadge)
+            .foregroundStyle(.white)
+            .padding(.horizontal, Spacing.sm)
+            .padding(.vertical, Spacing.xs)
+            .background(color)
+            .clipShape(Capsule())
+    }
+}
+
+struct InputFieldStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, Spacing.lg)
+            .padding(.vertical, Spacing.md)
+            .background(Color.surfaceSecondary)
+            .clipShape(RoundedRectangle(cornerRadius: CornerRadius.pill, style: .continuous))
+    }
+}
+
+// MARK: - View Extensions
+
+extension View {
+    func messageBubbleStyle(isUser: Bool) -> some View {
+        modifier(MessageBubbleStyle(isUser: isUser))
+    }
+
+    func cardStyle() -> some View {
+        modifier(CardStyle())
+    }
+
+    func statusBadgeStyle(color: Color) -> some View {
+        modifier(StatusBadgeStyle(color: color))
+    }
+
+    func inputFieldStyle() -> some View {
+        modifier(InputFieldStyle())
+    }
+}
+</file>
+
+<file path="gemini-app/gemini_appApp.swift">
+import SwiftUI
+import os.log
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "gemini-app", category: "gemini_appApp")
+
+// Notification names for app lifecycle
+let appMovedToBackgroundNotificationName = NSNotification.Name("app.movedToBackground")
+let appMovedToForegroundNotificationName = NSNotification.Name("app.movedToForeground")
+
+@main
+struct gemini_appApp: App {
+    @State private var notificationService = NotificationService.shared
+
+    init() {
+        // Register background task handler on app launch (iOS only)
+        #if os(iOS)
+        BackgroundTaskManager.shared.registerBackgroundTaskHandler()
+        #endif
+    }
+
+    var body: some Scene {
+        WindowGroup {
+            AppContent()
+                .environmentObject(notificationService)
+        }
+        #if os(macOS)
+        .windowStyle(.hiddenTitleBar)
+        .defaultSize(width: 1200, height: 800)
+        #endif
+
+        #if os(macOS)
+        Settings {
+            SettingsView()
+        }
+        #endif
+    }
+}
+
+// MARK: - App Content with Scene Phase Handling
+
+struct AppContent: View {
+    @Environment(\.scenePhase) var scenePhase
+
+    var body: some View {
+        ContentView()
+            .onChange(of: scenePhase) { oldPhase, newPhase in
+                handleScenePhaseChange(from: oldPhase, to: newPhase)
+            }
+    }
+
+    private func handleScenePhaseChange(from oldPhase: ScenePhase, to newPhase: ScenePhase) {
+        switch (oldPhase, newPhase) {
+        case (_, .background):
+            handleAppMovedToBackground()
+        case (.background, .active):
+            handleAppMovedToForeground()
+        default:
+            break
+        }
+    }
+
+    private func handleAppMovedToBackground() {
+        logger.info("App moved to background")
+        NotificationCenter.default.post(
+            Notification(name: appMovedToBackgroundNotificationName, object: nil)
+        )
+        #if os(iOS)
+        // Schedule background processing task to monitor SSE during suspension
+        BackgroundTaskManager.shared.scheduleBackgroundTask()
+        #endif
+    }
+
+    private func handleAppMovedToForeground() {
+        logger.info("App moved to foreground")
+        NotificationCenter.default.post(
+            Notification(name: appMovedToForegroundNotificationName, object: nil)
+        )
+        #if os(iOS)
+        // Cancel the background task now that app is active
+        BackgroundTaskManager.shared.cancelBackgroundTask()
+        #endif
+    }
+}
+</file>
+
+<file path="gemini-app/InAppNotification.swift">
+import Foundation
+import SwiftUI
+import os.log
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "gemini-app", category: "InAppNotification")
+
+// MARK: - In-App Notification Model
+
+struct InAppNotificationItem: Identifiable {
+    let id: String
+    let instanceId: String
+    let title: String
+    let message: String
+    let action: String?
+    let timestamp: Date
+
+    var projectName: String {
+        title
+    }
+}
+
+// MARK: - In-App Notification Manager
+
+@Observable
+final class InAppNotificationManager {
+    var notifications: [InAppNotificationItem] = []
+    var isExpanded = false
+
+    func show(
+        instanceId: String,
+        projectName: String,
+        title: String = "Conversation Complete"
+    ) {
+        let item = InAppNotificationItem(
+            id: UUID().uuidString,
+            instanceId: instanceId,
+            title: projectName,
+            message: title,
+            action: "tap_to_view",
+            timestamp: Date()
+        )
+
+        // Add notification to list (no auto-dismiss, persistent)
+        notifications.insert(item, at: 0)
+        logger.info("Notification shown: \(projectName)")
+    }
+
+    func dismiss(notificationId: String) {
+        notifications.removeAll { $0.id == notificationId }
+
+        // Close expanded view if no more notifications
+        if notifications.isEmpty {
+            isExpanded = false
+        }
+        logger.info("Notification dismissed")
+    }
+
+    func dismissAll() {
+        notifications.removeAll()
+        isExpanded = false
+    }
+
+    func toggleExpanded() {
+        isExpanded.toggle()
+    }
+}
+
+// MARK: - Notification Badge View (Dynamic Island style)
+
+struct NotificationBadge: View {
+    let manager: InAppNotificationManager
+    let onNotificationTap: (String) -> Void
+
+    var isSingleNotification: Bool {
+        manager.notifications.count == 1
+    }
+
+    @State private var swipeOffset: CGFloat = 0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+
+                VStack(spacing: 12) {
+                    // Expanded picker for multiple notifications
+                    if manager.isExpanded && !isSingleNotification {
+                        NotificationPickerView(
+                            notifications: manager.notifications,
+                            onNotificationTap: { instanceId in
+                                logger.info("Notification tapped: \(instanceId)")
+                                manager.isExpanded = false
+                                onNotificationTap(instanceId)
+                            },
+                            onDismiss: { notificationId in
+                                manager.dismiss(notificationId: notificationId)
+                            }
+                        )
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .top).combined(with: .opacity),
+                            removal: .move(edge: .top).combined(with: .opacity)
+                        ))
+                    }
+
+                    // Dynamic Island style badge
+                    ZStack(alignment: .trailing) {
+                        // Dismiss background (red) for swipe
+                        HStack {
+                            Spacer()
+                            Image(systemName: "trash.fill")
+                                .font(.caption2)
+                                .foregroundStyle(.white)
+                                .padding(.trailing, 12)
+                        }
+                        .background(Color.red)
+                        .cornerRadius(18)
+                        .opacity(swipeOffset < -20 ? 1 : 0)
+
+                        // Badge button - styled like Dynamic Island
+                        Button(action: {
+                            if isSingleNotification {
+                                // Single notification: navigate directly
+                                if let notification = manager.notifications.first {
+                                    logger.info("Single notification tapped, navigating to: \(notification.instanceId)")
+                                    onNotificationTap(notification.instanceId)
+                                }
+                            } else {
+                                // Multiple notifications: toggle expanded
+                                manager.toggleExpanded()
+                            }
+                        }) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "bell.fill")
+                                    .font(.system(size: 12, weight: .semibold))
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    if isSingleNotification {
+                                        if let notification = manager.notifications.first {
+                                            Text(notification.title)
+                                                .font(.caption.weight(.semibold))
+                                                .lineLimit(1)
+                                        }
+                                    } else {
+                                        Text("Notifications")
+                                            .font(.caption.weight(.semibold))
+
+                                        Text("\(manager.notifications.count) pending")
+                                            .font(.caption2)
+                                            .foregroundStyle(.white.opacity(0.8))
+                                    }
+                                }
+
+                                if !isSingleNotification {
+                                    Spacer()
+                                    Image(systemName: "chevron.down")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(.white.opacity(0.6))
+                                        .padding(.trailing, 4)
+                                }
+                            }
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(Color.black.opacity(0.8))
+                            .cornerRadius(18)
+                        }
+                        .offset(x: swipeOffset)
+                        .gesture(
+                            DragGesture()
+                                .onChanged { value in
+                                    let newOffset = value.translation.width
+                                    if newOffset < 0 {
+                                        swipeOffset = min(newOffset, 0)
+                                    }
+                                }
+                                .onEnded { _ in
+                                    if swipeOffset < -40 {
+                                        // Swipe to dismiss
+                                        withAnimation(.easeInOut(duration: 0.3)) {
+                                            swipeOffset = -100
+                                        }
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                            manager.dismissAll()
+                                            swipeOffset = 0
+                                        }
+                                    } else {
+                                        // Reset
+                                        withAnimation(.easeInOut(duration: 0.2)) {
+                                            swipeOffset = 0
+                                        }
+                                    }
+                                }
+                        )
+                    }
+                }
+                .padding(.horizontal, Spacing.lg)
+                .padding(.top, Spacing.md)
+
+                Spacer()
+            }
+
+            Spacer()
+        }
+        .opacity(manager.notifications.isEmpty ? 0 : 1)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: manager.isExpanded)
+        .animation(.easeInOut(duration: 0.2), value: manager.notifications.count)
+    }
+}
+
+// MARK: - Notification Picker View
+
+struct NotificationPickerView: View {
+    let notifications: [InAppNotificationItem]
+    let onNotificationTap: (String) -> Void
+    let onDismiss: (String) -> Void
+
+    var body: some View {
+        VStack(spacing: Spacing.sm) {
+            Text("Notifications")
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, Spacing.md)
+                .padding(.top, Spacing.md)
+
+            VStack(spacing: Spacing.xs) {
+                ForEach(notifications) { notification in
+                    NotificationPickerItem(
+                        notification: notification,
+                        onTap: {
+                            onNotificationTap(notification.instanceId)
+                        },
+                        onDismiss: {
+                            onDismiss(notification.id)
+                        }
+                    )
+                }
+            }
+            .padding(.horizontal, Spacing.md)
+            .padding(.bottom, Spacing.md)
+        }
+        .cardStyle()
+        .shadow(radius: 8, y: 4)
+    }
+}
+
+// MARK: - Notification Picker Item
+
+struct NotificationPickerItem: View {
+    let notification: InAppNotificationItem
+    let onTap: () -> Void
+    let onDismiss: () -> Void
+
+    @State private var offset: CGFloat = 0
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            // Dismiss background
+            HStack {
+                Spacer()
+                Image(systemName: "trash.fill")
+                    .font(.caption)
+                    .foregroundStyle(.white)
+                    .padding(.trailing, Spacing.md)
+            }
+            .background(Color.red)
+            .cornerRadius(CornerRadius.small)
+
+            // Content
+            HStack(spacing: Spacing.md) {
+                VStack(alignment: .leading, spacing: Spacing.xxs) {
+                    Text(notification.title)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+
+                    Text(notification.message)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(Spacing.md)
+            .cardStyle()
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if abs(offset) < 20 {
+                    onTap()
+                }
+            }
+            .offset(x: offset)
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        let newOffset = value.translation.width
+                        if newOffset < 0 {
+                            offset = min(newOffset, 0)
+                        }
+                    }
+                    .onEnded { _ in
+                        if offset < -60 {
+                            // Swipe to dismiss
+                            withAnimation(.easeInOut(duration: 0.3)) {
+                                offset = -200
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                onDismiss()
+                            }
+                        } else {
+                            // Reset
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                offset = 0
+                            }
+                        }
+                    }
+            )
+        }
+        .frame(height: 60)
+    }
+}
+
+// MARK: - Preview
+
+#Preview {
+    ZStack {
+        Color.surfaceSecondary.ignoresSafeArea()
+
+        VStack {
+            Text("Preview")
+            Spacer()
+        }
+        .padding()
+
+        NotificationBadge(
+            manager: {
+                let manager = InAppNotificationManager()
+                manager.show(instanceId: "1", projectName: "My Project", title: "Conversation Complete")
+                manager.show(instanceId: "2", projectName: "Another Project", title: "Action Required")
+                return manager
+            }(),
+            onNotificationTap: { _ in }
+        )
+    }
+}
+</file>
+
+<file path="gemini-app/NotificationService.swift">
+import UserNotifications
+import SwiftUI
+import Combine
+import os.log
+
+private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "gemini-app", category: "NotificationService")
+
+/// Central notification manager for handling local and push notifications
+@MainActor
+final class NotificationService: NSObject, ObservableObject {
+    static let shared = NotificationService()
+
+    // MARK: - Published Properties
+
+    @Published var notificationPermissionGranted = false
+
+    // MARK: - Initialization
+
+    override init() {
+        super.init()
+        checkNotificationPermission()
+        // Request permission on init - this is non-blocking
+        // User will see system prompt the first time
+        requestPermissionIfNeeded()
+    }
+
+    /// Request permission if not already granted
+    private func requestPermissionIfNeeded() {
+        Task {
+            let settings = await UNUserNotificationCenter.current().notificationSettings()
+            if settings.authorizationStatus == .notDetermined {
+                // Only request if not yet determined
+                self.requestPermission()
+            }
+        }
+    }
+
+    // MARK: - Permission Management
+
+    /// Check the current notification permission status
+    private func checkNotificationPermission() {
+        Task {
+            let settings = await UNUserNotificationCenter.current().notificationSettings()
+            await MainActor.run {
+                self.notificationPermissionGranted = settings.authorizationStatus == .authorized
+            }
+        }
+    }
+
+    /// Request notification permission from the user
+    func requestPermission() {
+        Task {
+            do {
+                let granted = try await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge])
+                self.notificationPermissionGranted = granted
+                if granted {
+                    logger.info("Notification permission granted")
+                } else {
+                    logger.warning("Notification permission denied by user")
+                }
+            } catch {
+                logger.error("Failed to request notification permission: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Local Notifications
+
+    /// Schedule a notification for conversation completion
+    func scheduleConversationCompleteNotification(
+        instanceId: String,
+        projectPath: String
+    ) {
+        guard notificationPermissionGranted else {
+            logger.warning("Cannot schedule notification: permission not granted")
+            return
+        }
+
+        let projectName = projectPath.split(separator: "/").last.map(String.init) ?? projectPath
+
+        let content = UNMutableNotificationContent()
+        content.title = "Gemini Chat Complete"
+        content.body = "Your conversation in \(projectName) is ready"
+        content.sound = .default
+        content.badge = NSNumber(value: 1)
+
+        // Deep link URL for notification tap
+        // Format: gemini-app://notification?id=<instanceId>&action=conversation_complete
+        content.userInfo = [
+            "deepLink": "gemini-app://notification?id=\(instanceId)&action=conversation_complete"
+        ]
+
+        // Schedule for immediate delivery
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let request = UNNotificationRequest(
+            identifier: "conversation-complete-\(instanceId)",
+            content: content,
+            trigger: trigger
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                logger.error("Failed to schedule notification: \(error.localizedDescription)")
+            } else {
+                logger.info("Scheduled notification for instance: \(instanceId)")
+            }
+        }
+    }
+
+    /// Schedule a notification for tool confirmation needed
+    func scheduleConfirmationNeededNotification(
+        instanceId: String,
+        toolName: String,
+        projectPath: String
+    ) {
+        guard notificationPermissionGranted else {
+            logger.warning("Cannot schedule notification: permission not granted")
+            return
+        }
+
+        let projectName = projectPath.split(separator: "/").last.map(String.init) ?? projectPath
+
+        let content = UNMutableNotificationContent()
+        content.title = "Action Required"
+        content.body = "Approve tool: \(toolName) in \(projectName)"
+        content.sound = .default
+        content.badge = NSNumber(value: 1)
+
+        // Deep link URL for notification tap
+        // Format: gemini-app://notification?id=<instanceId>&action=confirmation_needed
+        content.userInfo = [
+            "deepLink": "gemini-app://notification?id=\(instanceId)&action=confirmation_needed"
+        ]
+
+        // Schedule for immediate delivery
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 1, repeats: false)
+        let request = UNNotificationRequest(
+            identifier: "confirmation-needed-\(instanceId)",
+            content: content,
+            trigger: trigger
+        )
+
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                logger.error("Failed to schedule confirmation notification: \(error.localizedDescription)")
+            } else {
+                logger.info("Scheduled confirmation notification for instance: \(instanceId)")
+            }
+        }
+    }
+
+    /// Cancel all notifications for a specific instance
+    func cancelNotifications(for instanceId: String) {
+        let identifiersToCancel = [
+            "conversation-complete-\(instanceId)",
+            "confirmation-needed-\(instanceId)"
+        ]
+        UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: identifiersToCancel)
+        logger.info("Cancelled notifications for instance: \(instanceId)")
+    }
+
+    /// Cancel all notifications
+    func cancelAllNotifications() {
+        UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
+        logger.info("Cancelled all notifications")
+    }
+}
+</file>
+
+<file path="gemini-app/SSEClient.swift">
+import Foundation
+
+final class SSEClient: NSObject {
+    private let url: URL
+    private lazy var session: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 60
+        configuration.timeoutIntervalForResource = 0
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        configuration.urlCache = nil
+        return URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+    }()
+    private var task: URLSessionDataTask?
+    private var buffer = ""
+
+    var onOpen: (() -> Void)?
+    var onMessage: ((String) -> Void)?
+    var onError: ((Error?) -> Void)?
+
+    init(url: URL) {
+        self.url = url
+        super.init()
+    }
+
+    func connect() {
+        disconnect()
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+
+        let task = session.dataTask(with: request)
+        self.task = task
+        task.resume()
+
+        // Open callback is triggered when the first data arrives
+    }
+
+    func disconnect() {
+        task?.cancel()
+        task = nil
+    }
+}
+
+extension SSEClient: URLSessionDataDelegate {
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard let text = String(data: data, encoding: .utf8) else { return }
+        if buffer.isEmpty {
+            DispatchQueue.main.async { [weak self] in
+                self?.onOpen?()
+            }
+        }
+        buffer.append(text.replacingOccurrences(of: "\r\n", with: "\n"))
+        parseBuffer()
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        DispatchQueue.main.async { [weak self] in
+            self?.onError?(error)
+        }
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        completionHandler(.allow)
+    }
+
+    private func parseBuffer() {
+        while let range = buffer.range(of: "\n\n") {
+            let rawEvent = String(buffer[..<range.lowerBound])
+            buffer = String(buffer[range.upperBound...])
+
+            let lines = rawEvent.split(separator: "\n")
+            let dataLines = lines.compactMap { line -> String? in
+                if line.hasPrefix("data:") {
+                    return line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+                }
+                return nil
+            }
+            if !dataLines.isEmpty {
+                let data = dataLines.joined(separator: "\n")
+                DispatchQueue.main.async { [weak self] in
+                    self?.onMessage?(data)
+                }
+            }
+        }
+    }
+}
+</file>
+
+</files>

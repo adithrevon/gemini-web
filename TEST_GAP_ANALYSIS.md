@@ -2,7 +2,8 @@
 
 ## Summary
 
-The bug where `activeInstanceId` was overwritten during restoration **was not caught by integration tests** because:
+The bug where `activeInstanceId` was overwritten during restoration **was not
+caught by integration tests** because:
 
 1. ✅ **Persistence is brand new code** with zero test coverage
 2. ✅ **No tests simulate server restart**
@@ -33,10 +34,12 @@ The bug where `activeInstanceId` was overwritten during restoration **was not ca
 ### What Is NOT Tested
 
 ❌ **Server restart/restoration**
+
 - No tests stop and restart the server
 - No tests verify state is restored from disk
 
 ❌ **Persistence system** (new code)
+
 - `SessionPersistence` class - never tested
 - `_loadPersistedSessions()` - never executed
 - `_restoreClaudeInstance()` - never executed
@@ -46,11 +49,13 @@ The bug where `activeInstanceId` was overwritten during restoration **was not ca
 - Corrupt file handling - never tested
 
 ❌ **Multi-instance scenarios**
+
 - Tests spawn one instance at a time
 - Never spawn multiple instances in one session
 - Never verify which instance is "active"
 
 ❌ **Message routing validation**
+
 - Tests verify messages are forwarded
 - But DON'T verify they go to the CORRECT instance
 - `activeInstanceId` is never validated
@@ -99,17 +104,20 @@ it('preserves activeInstanceId when restoring multiple instances', async () => {
 ### Impact of Missing Tests
 
 **Without restoration tests:**
+
 - ❌ Bugs in restoration logic go undetected
 - ❌ Breaking changes to persistence format not caught
 - ❌ Session state corruption not detected
 - ❌ Cross-restart behavior undefined
 
 **Without multi-instance tests:**
+
 - ❌ Instance isolation bugs
 - ❌ Message routing bugs (like this one)
 - ❌ activeInstanceId management bugs
 
 **Without message routing validation:**
+
 - ❌ Messages can silently go to wrong instance
 - ❌ User sees their message appear in different conversation
 - ❌ Data leakage between instances
@@ -117,6 +125,7 @@ it('preserves activeInstanceId when restoring multiple instances', async () => {
 ### Real-World Scenario
 
 **What happened in production:**
+
 1. User has 2 conversations open (Claude + Gemini)
 2. Claude conversation is active
 3. Server restarts (deployment, crash, etc.)
@@ -131,6 +140,7 @@ it('preserves activeInstanceId when restoring multiple instances', async () => {
 **File:** `src/__tests__/persistence.test.ts`
 
 New tests covering:
+
 - ✅ Persistence file creation
 - ✅ Single instance restoration (Claude)
 - ✅ **Multi-instance activeInstanceId preservation** ⭐
@@ -139,6 +149,7 @@ New tests covering:
 - ✅ Graceful shutdown persistence
 
 These tests would have caught the bug immediately:
+
 ```
 ❌ FAIL preserves activeInstanceId when restoring multiple instances
    Expected: claudeId
@@ -181,24 +192,26 @@ These tests would have caught the bug immediately:
 
 ## Test Coverage Goal
 
-| Component | Current | Target |
-|-----------|---------|--------|
-| Server routes | 80% | 90% |
-| Persistence | 0% ❌ | 90% |
-| Multi-instance | 20% | 80% |
-| Restoration | 0% ❌ | 90% |
-| Message routing | 50% | 90% |
+| Component       | Current | Target |
+| --------------- | ------- | ------ |
+| Server routes   | 80%     | 90%    |
+| Persistence     | 0% ❌   | 90%    |
+| Multi-instance  | 20%     | 80%    |
+| Restoration     | 0% ❌   | 90%    |
+| Message routing | 50%     | 90%    |
 
 **Overall:** ~50% → **90%**
 
 ## Conclusion
 
 The bug wasn't caught because:
+
 1. **New feature** (persistence) had no tests
 2. **Test gap** in multi-instance scenarios
 3. **No validation** of message routing correctness
 
 **Solution:**
+
 - ✅ Add comprehensive persistence tests
 - ✅ Require tests for new features
 - ✅ Test multi-instance scenarios

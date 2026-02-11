@@ -116,7 +116,10 @@ export class SessionPersistence {
 
       log('persistence: write complete', {
         sessions: data.sessions.length,
-        instances: data.sessions.reduce((sum, s) => sum + s.instances.length, 0),
+        instances: data.sessions.reduce(
+          (sum, s) => sum + s.instances.length,
+          0,
+        ),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

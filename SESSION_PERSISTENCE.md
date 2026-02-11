@@ -2,24 +2,30 @@
 
 ## Overview
 
-Sessions and conversation instances now persist across server restarts. When the backend server (packages/web/) is stopped and restarted, all active conversations are automatically restored with their full history.
+Sessions and conversation instances now persist across server restarts. When the
+backend server (packages/web/) is stopped and restarted, all active
+conversations are automatically restored with their full history.
 
 ## Storage Location
 
 `~/.gemini-web/sessions.json`
 
-This file is created automatically on first run and contains all session and instance state.
+This file is created automatically on first run and contains all session and
+instance state.
 
 ## How It Works
 
 ### 1. State Persistence
 
 The server continuously saves state to disk with the following strategy:
+
 - **Debounced writes**: Maximum 1 write per 5 seconds (batches rapid updates)
-- **Atomic operations**: Writes to `.tmp` file, then atomic rename (prevents corruption)
+- **Atomic operations**: Writes to `.tmp` file, then atomic rename (prevents
+  corruption)
 - **Graceful shutdown**: Immediate final write on server shutdown (Ctrl+C)
 
 State is persisted whenever:
+
 - A session is created or modified
 - An instance is spawned or terminated
 - A conversation update occurs (new messages, tool calls, etc.)
@@ -28,20 +34,26 @@ State is persisted whenever:
 ### 2. Session Restoration
 
 On server startup, the system:
+
 1. Loads `~/.gemini-web/sessions.json`
 2. Restores all sessions and instances into memory
-3. For **Claude instances**: Restores the SDK session ID → resume on next message
-4. For **Gemini instances**: Spawns CLI with `--resume <session-id>` flag → full restoration
+3. For **Claude instances**: Restores the SDK session ID → resume on next
+   message
+4. For **Gemini instances**: Spawns CLI with `--resume <session-id>` flag → full
+   restoration
 
 ### 3. Provider-Specific Resume
 
 **Claude (SDK)**:
+
 - Session ID is stored from the SDK's `result` message (`session_id` field)
 - On restore, the `_sessionId` field is set in ClaudeBridge
 - SDK automatically continues the conversation on the next message
 
 **Gemini (CLI)**:
-- Session ID is emitted by the CLI in `bridge:update` payload (from `config.getSessionId()`)
+
+- Session ID is emitted by the CLI in `bridge:update` payload (from
+  `config.getSessionId()`)
 - On restore, the CLI is spawned with `--resume <session-id>` flag
 - CLI loads conversation history from its session file
 
@@ -77,32 +89,38 @@ On server startup, the system:
 ## iOS App Behavior
 
 The iOS app requires **no changes**. It already:
+
 - Persists `sessionId` in UserDefaults
 - Loads it on startup
 - Sends it to the server in `/api/session` POST
 - Receives `session_state` event with all restored instances
 - Displays conversations automatically
 
-From the user's perspective, conversations simply reappear after a server restart.
+From the user's perspective, conversations simply reappear after a server
+restart.
 
 ## Error Handling
 
 **Corrupt persistence file**:
+
 - File is renamed to `sessions.json.corrupt.<timestamp>`
 - Server starts fresh with empty state
 - Error is logged to console
 
 **Disk full / write errors**:
+
 - Error is logged
 - Server continues in-memory only
 - Next successful write resumes persistence
 
 **Expired Claude session**:
+
 - SDK returns error on resume
 - Logged as warning
 - Conversation starts fresh
 
 **Missing Gemini session file**:
+
 - CLI creates a new session
 - Logged as warning
 - Conversation starts fresh
@@ -112,17 +130,22 @@ From the user's perspective, conversations simply reappear after a server restar
 ### Backend (packages/web/)
 
 **New:**
+
 - `src/persistence.ts` - SessionPersistence class
 
 **Modified:**
-- `src/types.ts` - Added persistence types and `sessionId` to BridgeUpdatePayload
+
+- `src/types.ts` - Added persistence types and `sessionId` to
+  BridgeUpdatePayload
 - `src/server.ts` - Added load/restore/persist methods
 - `src/gemini-bridge.ts` - Added resume support and session ID capture
 
 ### CLI (packages/cli/)
 
 **Modified:**
-- `src/ui/components/WebBridge.tsx` - Added `sessionId` to bridge snapshot (from `config.getSessionId()`)
+
+- `src/ui/components/WebBridge.tsx` - Added `sessionId` to bridge snapshot (from
+  `config.getSessionId()`)
 
 ### iOS App
 

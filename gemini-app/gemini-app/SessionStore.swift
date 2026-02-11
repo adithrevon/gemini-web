@@ -32,6 +32,8 @@ final class SessionStore: SessionServiceDelegate {
     private let service = SessionService()
     private var appIsInBackground = false
     private var inAppNotificationManager: InAppNotificationManager?
+    private var disconnectTask: Task<Void, Never>?
+    private let disconnectGracePeriod: TimeInterval = 3.0
     
     // MARK: - Initialization
     
@@ -80,6 +82,8 @@ final class SessionStore: SessionServiceDelegate {
     func disconnect() {
         service.disconnect()
         connected = false
+        disconnectTask?.cancel()
+        disconnectTask = nil
     }
 
     /// Called when server is changed - clears state and reconnects
@@ -205,6 +209,8 @@ final class SessionStore: SessionServiceDelegate {
     
     nonisolated func sessionServiceDidConnect(_ service: SessionService) {
         Task { @MainActor in
+            disconnectTask?.cancel()
+            disconnectTask = nil
             connected = true
         }
     }
@@ -217,13 +223,19 @@ final class SessionStore: SessionServiceDelegate {
     
     nonisolated func sessionService(_ service: SessionService, didDisconnect error: Error) {
         Task { @MainActor in
-            connected = false
+            scheduleDisconnect()
         }
     }
     
     // MARK: - Message Handling
     
     private func handleMessage(_ message: IncomingMessage) {
+        if !connected {
+            connected = true
+        }
+        disconnectTask?.cancel()
+        disconnectTask = nil
+
         switch message {
         case .sessionState(let state):
             applySessionState(state)
@@ -242,6 +254,18 @@ final class SessionStore: SessionServiceDelegate {
             
         case .unknown:
             break
+        }
+    }
+
+    @MainActor
+    private func scheduleDisconnect() {
+        disconnectTask?.cancel()
+        disconnectTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: UInt64(self.disconnectGracePeriod * 1_000_000_000))
+            await MainActor.run {
+                self.connected = false
+            }
         }
     }
     

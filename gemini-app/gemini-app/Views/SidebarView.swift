@@ -88,6 +88,17 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .navigationTitle("Chats")
+        .toolbar {
+            #if os(iOS)
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button { onOpenSettings() } label: { Image(systemName: "gear") }
+            }
+            #else
+            ToolbarItem(placement: .primaryAction) {
+                Button { onOpenSettings() } label: { Image(systemName: "gear") }
+            }
+            #endif
+        }
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
