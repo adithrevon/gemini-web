@@ -12,6 +12,9 @@ struct ComposerView: View {
     let streamingState: StreamingState
     let maxLines: Int
     let modelSelector: ModelSelectorConfig?
+    let provider: Provider?
+    let planModeActive: Bool
+    let onTogglePlanMode: (() -> Void)?
 
     let onSubmit: (String) -> Void
     let onInterrupt: (() -> Void)?
@@ -159,6 +162,17 @@ struct ComposerView: View {
                     config.onSelect(model)
                 }
             }
+
+            // Claude-specific: Plan mode toggle
+            if provider == .claude, let onToggle = onTogglePlanMode {
+                ClaudePlanModeToggle(
+                    isActive: Binding(
+                        get: { planModeActive },
+                        set: { _ in onToggle() }
+                    )
+                )
+            }
+
             Spacer()
 
             if !isStreaming {

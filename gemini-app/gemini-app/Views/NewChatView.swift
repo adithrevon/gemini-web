@@ -144,6 +144,9 @@ struct NewChatView: View {
                 streamingState: .idle,
                 maxLines: 4,
                 modelSelector: nil,
+                provider: nil,
+                planModeActive: false,
+                onTogglePlanMode: nil,
                 onSubmit: { text in
                     didSendMessage = true
                     onSubmitMessage(text)

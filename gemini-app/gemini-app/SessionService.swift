@@ -404,6 +404,10 @@ final class SessionService: NSObject {
         try await sendCommand(.setModel(instanceId: instanceId, model: model))
     }
 
+    func togglePlanMode(instanceId: String) async throws {
+        try await sendCommand(.togglePlanMode(instanceId: instanceId))
+    }
+
     func terminateInstance(_ instanceId: String) async throws {
         try await sendCommand(.terminateInstance(instanceId: instanceId))
     }

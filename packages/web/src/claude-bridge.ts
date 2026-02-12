@@ -5,6 +5,7 @@ import type {
   HistoryMessage,
   ToolCallInfo,
   ModelOption,
+  TodoList,
 } from './types.js';
 import { createTaggedLogger } from './logger.js';
 
@@ -89,6 +90,14 @@ export class ClaudeStateAccumulator {
   currentModel = '';
   availableModels: ModelOption[] = [];
 
+  // Usage metrics removed - will be fetched from API instead
+  // No longer accumulating tokens/costs locally
+
+  todos: TodoList = {
+    items: [],
+    lastUpdated: new Date().toISOString(),
+  };
+
   private _streamingText = '';
   private _pendingToolUses = new Map<string, PendingToolUse>();
   private _toolCallCounter = 0;
@@ -109,6 +118,8 @@ export class ClaudeStateAccumulator {
       currentModel: this.currentModel,
       availableModels: [...this.availableModels],
       hasPreviewAccess: false,
+      // usageMetrics removed - fetched from API instead
+      todos: this.todos.items.length > 0 ? this.todos : undefined,
     };
   }
 
@@ -341,6 +352,31 @@ export class ClaudeStateAccumulator {
             status: toolInfo.status,
             resultLen,
           });
+
+          // Extract TODOs from TodoWrite tool
+          if (toolInfo.name === 'TodoWrite' && !block.is_error) {
+            try {
+              const content =
+                typeof block.content === 'string'
+                  ? block.content
+                  : JSON.stringify(block.content);
+
+              const parsed = JSON.parse(content);
+              if (parsed.tasks && Array.isArray(parsed.tasks)) {
+                this.todos.items = parsed.tasks.map(
+                  (task: any, idx: number) => ({
+                    id: `todo-${Date.now()}-${idx}`,
+                    status: task.status || 'pending',
+                    description: task.description || task.subject || '',
+                    createdAt: new Date().toISOString(),
+                  }),
+                );
+                this.todos.lastUpdated = new Date().toISOString();
+              }
+            } catch (err) {
+              log.debug('Failed to parse TodoWrite result', err);
+            }
+          }
         } else {
           log.debug('tool_result unmatched', { tool_use_id: toolId });
         }
@@ -385,6 +421,10 @@ export class ClaudeStateAccumulator {
       result:
         typeof msg.result === 'string' ? msg.result.slice(0, 200) : undefined,
     });
+
+    // Usage metrics removed - will be fetched from API instead
+    // No longer tracking tokens, costs, turns, or duration locally
+
     // Flush any remaining streaming text
     if (this._streamingText) {
       this.history.push({ type: 'gemini', text: this._streamingText });
@@ -576,6 +616,7 @@ export class ClaudeBridge implements Provider {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private _queryFn: ((...args: any[]) => any) | null = null;
   private _yolo: boolean;
+  private _planModeActive = false;
   private _pendingConfirmations = new Map<string, PendingConfirmation>();
 
   constructor(opts: {
@@ -652,6 +693,9 @@ export class ClaudeBridge implements Provider {
       if (this._yolo) {
         options['permissionMode'] = 'bypassPermissions';
         options['allowDangerouslySkipPermissions'] = true;
+      } else if (this._planModeActive) {
+        options['permissionMode'] = 'plan';
+        options['canUseTool'] = this._canUseTool.bind(this);
       } else {
         options['permissionMode'] = 'default';
         options['canUseTool'] = this._canUseTool.bind(this);
@@ -731,6 +775,20 @@ export class ClaudeBridge implements Provider {
     }
   }
 
+  async togglePlanMode(): Promise<void> {
+    this._planModeActive = !this._planModeActive;
+    log.debug('togglePlanMode()', {
+      instanceId: this.instanceId,
+      planModeActive: this._planModeActive,
+    });
+    // Plan mode only affects the next query, not the current one
+    // The permission mode is set when creating the query in submitMessage
+  }
+
+  getPlanModeActive(): boolean {
+    return this._planModeActive;
+  }
+
   async confirm(
     callId: string,
     outcome: string,
@@ -798,7 +856,11 @@ export class ClaudeBridge implements Provider {
   }
 
   getSnapshot(): BridgeUpdatePayload {
-    return this.accumulator.snapshot();
+    const snapshot = this.accumulator.snapshot();
+    return {
+      ...snapshot,
+      planModeActive: this._planModeActive,
+    };
   }
 
   private async _fetchModels(): Promise<void> {

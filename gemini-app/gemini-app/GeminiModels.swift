@@ -76,9 +76,66 @@ struct AnsiToken: Codable {
 
 typealias AnsiLine = [AnsiToken]
 
-struct TodoItem: Codable {
-    let status: String?
+struct TodoItem: Codable, Identifiable {
+    let id: String
+    let subject: String
     let description: String?
+    let status: String
+    let blockedBy: [String]?
+    let blocks: [String]?
+    let createdAt: String?
+    let completedAt: String?
+}
+
+struct TodoList: Codable {
+    let items: [TodoItem]
+    let lastUpdated: String
+}
+
+struct ModelUsageStats: Codable {
+    let requests: Int
+    let inputTokens: Int
+    let outputTokens: Int
+    let cachedTokens: Int
+}
+
+struct UsageMetrics: Codable {
+    let totalInputTokens: Int?
+    let totalOutputTokens: Int?
+    let totalCachedTokens: Int?
+    let totalTokens: Int?
+    let totalCostUsd: Double?
+    let totalApiCalls: Int?
+    let totalApiErrors: Int?
+    let totalApiLatencyMs: Int?
+    let totalToolCalls: Int?
+    let totalToolSuccess: Int?
+    let totalToolFail: Int?
+    let numTurns: Int?
+    let durationMs: Int?
+    let modelBreakdown: [String: ModelUsageStats]?
+}
+
+// MARK: - Usage Limits (Claude)
+
+struct UsageLimits: Codable {
+    let fiveHour: UsageLimitData
+    let sevenDay: UsageLimitData
+
+    enum CodingKeys: String, CodingKey {
+        case fiveHour = "five_hour"
+        case sevenDay = "seven_day"
+    }
+}
+
+struct UsageLimitData: Codable {
+    let utilization: Double
+    let resetsAt: String
+
+    enum CodingKeys: String, CodingKey {
+        case utilization
+        case resetsAt = "resets_at"
+    }
 }
 
 struct ToolResultDisplay: Codable {
@@ -249,6 +306,8 @@ struct BridgeUpdatePayload: Decodable {
     let currentModel: String?
     let availableModels: [ModelOption]?
     let hasPreviewAccess: Bool?
+    let usageMetrics: UsageMetrics?
+    let todos: TodoList?
 }
 
 struct SessionInstanceInfo: Codable {
@@ -368,6 +427,7 @@ enum OutgoingMessage: Encodable {
     case submit(instanceId: String, text: String)
     case confirm(instanceId: String, callId: String, outcome: ConfirmOutcome, correlationId: String?)
     case setModel(instanceId: String, model: String)
+    case togglePlanMode(instanceId: String)
     case spawnInstance(projectPath: String, provider: Provider = .gemini, yolo: Bool = false)
     case terminateInstance(instanceId: String)
     case setActiveInstance(instanceId: String)
@@ -403,6 +463,9 @@ enum OutgoingMessage: Encodable {
             try container.encode("setModel", forKey: .type)
             try container.encode(instanceId, forKey: .instanceId)
             try container.encode(model, forKey: .model)
+        case .togglePlanMode(let instanceId):
+            try container.encode("togglePlanMode", forKey: .type)
+            try container.encode(instanceId, forKey: .instanceId)
         case .spawnInstance(let projectPath, let provider, let yolo):
             try container.encode("spawnInstance", forKey: .type)
             try container.encode(projectPath, forKey: .projectPath)
@@ -438,6 +501,9 @@ struct InstanceState: Identifiable {
     var availableModels: [ModelOption]
     var error: String?
     var provider: Provider = .gemini
+    var usageMetrics: UsageMetrics?
+    var todos: TodoList?
+    var planModeActive: Bool = false
 }
 
 // MARK: - Directory Browsing

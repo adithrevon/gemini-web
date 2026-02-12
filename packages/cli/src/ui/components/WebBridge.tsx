@@ -10,6 +10,7 @@ import { useUIState } from '../contexts/UIStateContext.js';
 import { useUIActions } from '../contexts/UIActionsContext.js';
 import { useConfig } from '../contexts/ConfigContext.js';
 import { useToolActions } from '../contexts/ToolActionsContext.js';
+import { useSessionStats } from '../contexts/SessionContext.js';
 import type {
   HistoryItem,
   HistoryItemWithoutId,
@@ -68,6 +69,41 @@ type BridgeModelOption = {
   isAuto: boolean;
 };
 
+type UsageMetrics = {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCachedTokens: number;
+  totalTokens: number;
+  totalApiCalls: number;
+  totalApiErrors: number;
+  totalApiLatencyMs: number;
+  totalToolCalls: number;
+  totalToolSuccess: number;
+  totalToolFail: number;
+  modelBreakdown?: Record<
+    string,
+    {
+      requests: number;
+      inputTokens: number;
+      outputTokens: number;
+      cachedTokens: number;
+    }
+  >;
+};
+
+type TodoItem = {
+  id: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  description: string;
+  createdAt: string;
+  completedAt?: string;
+};
+
+type TodoList = {
+  items: TodoItem[];
+  lastUpdated: string;
+};
+
 type BridgeSnapshot = {
   instanceId: string;
   sessionId?: string;
@@ -79,6 +115,8 @@ type BridgeSnapshot = {
   currentModel: string;
   availableModels: BridgeModelOption[];
   hasPreviewAccess: boolean;
+  usageMetrics?: UsageMetrics;
+  todos?: TodoList;
 };
 
 const sanitizeConfirmationDetails = (
@@ -259,11 +297,106 @@ const safeParseMessage = (raw: unknown): Record<string, unknown> | null => {
   }
 };
 
+const convertSessionMetricsToUsageMetrics = (
+  metrics: import('@google/gemini-cli-core').SessionMetrics,
+): UsageMetrics => {
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalCachedTokens = 0;
+  let totalApiCalls = 0;
+  let totalApiErrors = 0;
+  let totalApiLatencyMs = 0;
+
+  const modelBreakdown: Record<
+    string,
+    {
+      requests: number;
+      inputTokens: number;
+      outputTokens: number;
+      cachedTokens: number;
+    }
+  > = {};
+
+  for (const [modelName, modelMetrics] of Object.entries(metrics.models || {})) {
+    totalApiCalls += modelMetrics.api?.totalRequests || 0;
+    totalApiErrors += modelMetrics.api?.totalErrors || 0;
+    totalApiLatencyMs += modelMetrics.api?.totalLatencyMs || 0;
+
+    const tokens = modelMetrics.tokens || {};
+    const input = tokens.input || 0;
+    const output = tokens.candidates || 0;
+    const cached = tokens.cached || 0;
+
+    totalInputTokens += input;
+    totalOutputTokens += output;
+    totalCachedTokens += cached;
+
+    modelBreakdown[modelName] = {
+      requests: modelMetrics.api?.totalRequests || 0,
+      inputTokens: input,
+      outputTokens: output,
+      cachedTokens: cached,
+    };
+  }
+
+  return {
+    totalInputTokens,
+    totalOutputTokens,
+    totalCachedTokens,
+    totalTokens: totalInputTokens + totalOutputTokens,
+    totalApiCalls,
+    totalApiErrors,
+    totalApiLatencyMs,
+    totalToolCalls: metrics.tools?.totalCalls || 0,
+    totalToolSuccess: metrics.tools?.totalSuccess || 0,
+    totalToolFail: metrics.tools?.totalFail || 0,
+    modelBreakdown,
+  };
+};
+
+const extractTodosFromHistory = (
+  history: HistoryItem[],
+): TodoList | undefined => {
+  // Scan history in reverse to find most recent WriteTodosTool result
+  for (let i = history.length - 1; i >= 0; i--) {
+    const item = history[i];
+    if (item.type === 'tool_group') {
+      for (const tool of item.tools) {
+        const resultDisplay = tool.resultDisplay;
+        if (
+          resultDisplay &&
+          typeof resultDisplay === 'object' &&
+          'todos' in resultDisplay &&
+          Array.isArray(resultDisplay.todos) &&
+          resultDisplay.todos.length > 0
+        ) {
+          return {
+            items: resultDisplay.todos.map(
+              (
+                todo: { description: string; status: string },
+                idx: number,
+              ) => ({
+                id: `todo-${Date.now()}-${idx}`,
+                status: todo.status || 'pending',
+                description: todo.description || '',
+                createdAt: new Date().toISOString(),
+              }),
+            ),
+            lastUpdated: new Date().toISOString(),
+          };
+        }
+      }
+    }
+  }
+  return undefined;
+};
+
 export const WebBridge = () => {
   const uiState = useUIState();
   const uiActions = useUIActions();
   const config = useConfig();
   const toolActions = useToolActions();
+  const { getSessionStats } = useSessionStats();
   const wsRef = useRef<WebSocket | null>(null);
   const snapshotRef = useRef<BridgeSnapshot | null>(null);
   const lastPayloadRef = useRef<string>('');
@@ -295,6 +428,14 @@ export const WebBridge = () => {
     const pending = uiState.pendingHistoryItems
       .map((item) => serializeHistoryItem(item, false))
       .filter((item): item is BridgeHistoryItem => item !== null);
+
+    const sessionStats = getSessionStats();
+    const usageMetrics = sessionStats?.metrics
+      ? convertSessionMetricsToUsageMetrics(sessionStats.metrics)
+      : undefined;
+
+    const todos = extractTodosFromHistory(uiState.history);
+
     return {
       instanceId: process.env['GEMINI_INSTANCE_ID'] ?? 'default',
       sessionId: config?.getSessionId(),
@@ -306,6 +447,8 @@ export const WebBridge = () => {
       currentModel,
       availableModels,
       hasPreviewAccess,
+      usageMetrics,
+      todos,
     };
   }, [
     uiState.history,
@@ -316,6 +459,7 @@ export const WebBridge = () => {
     availableModels,
     hasPreviewAccess,
     config,
+    getSessionStats,
   ]);
 
   const findToolInfo = (

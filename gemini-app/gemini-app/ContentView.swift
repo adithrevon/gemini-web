@@ -15,6 +15,8 @@ struct ContentView: View {
     @State private var pendingModel: String?
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
     @State private var navigationPath = NavigationPath()
+    @State private var showDetailPanelSheet = false
+    @AppStorage("showDetailPanel") private var showDetailPanel = true
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
@@ -194,16 +196,23 @@ struct ContentView: View {
                 onOpenSettings: { showSettings = true }
             )
         } detail: {
-            if showNewChat || !hasActiveChat {
-                newChatScreen
-            } else if let instance = store.activeInstance {
-                chatDetailView(instance: instance)
-            } else {
-                ContentUnavailableView(
-                    "No Chat Selected",
-                    systemImage: "bubble.left.and.bubble.right",
-                    description: Text("Select a chat from the sidebar or start a new one")
-                )
+            HStack(spacing: 0) {
+                if showNewChat || !hasActiveChat {
+                    newChatScreen
+                } else if let instance = store.activeInstance {
+                    chatDetailView(instance: instance)
+                } else {
+                    ContentUnavailableView(
+                        "No Chat Selected",
+                        systemImage: "bubble.left.and.bubble.right",
+                        description: Text("Select a chat from the sidebar or start a new one")
+                    )
+                }
+
+                // Detail panel for iPad (always visible when enabled)
+                if horizontalSizeClass != .compact {
+                    DetailPanelContainer(instance: store.activeInstance)
+                }
             }
         }
     }
@@ -241,6 +250,11 @@ struct ContentView: View {
                         store.sendSetModel(model)
                     }
                 ),
+                provider: instance.provider,
+                planModeActive: instance.planModeActive,
+                onTogglePlanMode: {
+                    store.togglePlanMode()
+                },
                 onSubmit: { text in store.sendSubmit(text) },
                 onInterrupt: { store.sendInterrupt() }
             )
@@ -251,6 +265,41 @@ struct ContentView: View {
                 VStack(spacing: 2) {
                     Text(projectName(from: instance.projectPath))
                         .font(.subheadline.weight(.semibold))
+                }
+            }
+
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                // Detail panel toggle (iPad) or sheet (iPhone)
+                if horizontalSizeClass == .compact {
+                    // iPhone: Show as sheet
+                    Button {
+                        showDetailPanelSheet = true
+                    } label: {
+                        Image(systemName: "sidebar.right")
+                    }
+                } else {
+                    // iPad: Toggle visibility
+                    Button {
+                        showDetailPanel.toggle()
+                    } label: {
+                        Image(systemName: showDetailPanel ? "sidebar.right" : "sidebar.trailing")
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showDetailPanelSheet) {
+            NavigationStack {
+                if let instance = store.activeInstance {
+                    DetailPanelContainer(instance: instance)
+                        .navigationTitle("Tools")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Done") {
+                                    showDetailPanelSheet = false
+                                }
+                            }
+                        }
                 }
             }
         }

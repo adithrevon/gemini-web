@@ -205,6 +205,21 @@ final class SessionStore: SessionServiceDelegate {
         }
     }
 
+    func togglePlanMode() {
+        guard let instanceId = activeInstanceId else { return }
+
+        // Toggle the local state
+        if var instance = instances[instanceId] {
+            instance.planModeActive.toggle()
+            instances[instanceId] = instance
+
+            // Send command to backend
+            Task {
+                try? await service.togglePlanMode(instanceId: instanceId)
+            }
+        }
+    }
+
     // MARK: - SessionServiceDelegate
     
     nonisolated func sessionServiceDidConnect(_ service: SessionService) {
@@ -294,6 +309,7 @@ final class SessionStore: SessionServiceDelegate {
         // Apply snapshots
         for snapshot in state.snapshots {
             let existing = newInstances[snapshot.instanceId]
+            let oldExisting = instances[snapshot.instanceId] // Preserve from old state
             let provider = existing?.provider ?? .gemini
             newInstances[snapshot.instanceId] = InstanceState(
                 id: snapshot.instanceId,
@@ -306,7 +322,10 @@ final class SessionStore: SessionServiceDelegate {
                 currentModel: snapshot.currentModel ?? existing?.currentModel ?? provider.defaultModel,
                 availableModels: snapshot.availableModels ?? existing?.availableModels ?? [],
                 error: nil,
-                provider: provider
+                provider: provider,
+                usageMetrics: nil,
+                todos: nil,
+                planModeActive: oldExisting?.planModeActive ?? false
             )
             
             // Update recent projects
@@ -394,7 +413,10 @@ final class SessionStore: SessionServiceDelegate {
             currentModel: payload.currentModel ?? existing?.currentModel ?? provider.defaultModel,
             availableModels: payload.availableModels ?? existing?.availableModels ?? [],
             error: nil,
-            provider: provider
+            provider: provider,
+            usageMetrics: payload.usageMetrics,
+            todos: payload.todos,
+            planModeActive: existing?.planModeActive ?? false
         )
 
         if activeInstanceId == nil {

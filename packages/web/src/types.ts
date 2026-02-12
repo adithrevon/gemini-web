@@ -72,6 +72,57 @@ export interface ConfirmationDetails {
   fileDiff?: string;
 }
 
+// --- Usage Metrics & TODOs ---
+
+export interface UsageMetrics {
+  // Tokens
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCachedTokens: number;
+  totalTokens: number;
+
+  // Cost (Claude only)
+  totalCostUsd?: number;
+
+  // API performance
+  totalApiCalls: number;
+  totalApiErrors: number;
+  totalApiLatencyMs: number;
+
+  // Tool usage
+  totalToolCalls: number;
+  totalToolSuccess: number;
+  totalToolFail: number;
+
+  // Session info (Claude-specific)
+  numTurns?: number;
+  durationMs?: number;
+
+  // Per-model stats (Gemini-specific)
+  modelBreakdown?: Record<
+    string,
+    {
+      requests: number;
+      inputTokens: number;
+      outputTokens: number;
+      cachedTokens: number;
+    }
+  >;
+}
+
+export interface TodoItem {
+  id: string;
+  status: 'pending' | 'in_progress' | 'completed' | 'cancelled';
+  description: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface TodoList {
+  items: TodoItem[];
+  lastUpdated: string;
+}
+
 // --- Bridge update payload (sent via SSE) ---
 
 export interface BridgeUpdatePayload {
@@ -85,6 +136,9 @@ export interface BridgeUpdatePayload {
   currentModel: string;
   availableModels: ModelOption[];
   hasPreviewAccess: boolean;
+  usageMetrics?: UsageMetrics;
+  todos?: TodoList;
+  planModeActive?: boolean; // Claude-specific
 }
 
 // --- SSE event types ---

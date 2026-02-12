@@ -6,7 +6,8 @@
       "Bash(xcrun devicectl device install app:*)",
       "Bash(xcrun xcodebuild:*)",
       "Bash(xcrun devicectl device process launch:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(xargs ls:*)"
     ]
   }
 }

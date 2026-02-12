@@ -2,6 +2,7 @@ import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { execSync } from 'node:child_process';
 import { readdirSync, statSync, existsSync, mkdirSync } from 'node:fs';
 import { WebSocketServer, WebSocket } from 'ws';
 
@@ -28,6 +29,7 @@ import {
 } from './utils.js';
 import { log, logInfo, logCommand, fileLog, logFilePath } from './logger.js';
 import { SessionPersistence } from './persistence.js';
+import { UsageLimitsTracker } from './usage-limits.js';
 
 // --- Internal types ---
 
@@ -59,6 +61,7 @@ export class GeminiWebServer {
   private httpServer: http.Server;
   private wss: WebSocketServer;
   private persistence: SessionPersistence;
+  private usageLimitsTracker: UsageLimitsTracker | null = null;
 
   constructor(config: ServerConfig) {
     this.config = config;
@@ -70,6 +73,11 @@ export class GeminiWebServer {
     }
     const persistFile = path.join(persistDir, 'sessions.json');
     this.persistence = new SessionPersistence(persistFile);
+
+    // Initialize usage limits tracker
+    // Try to get credentials from keychain (same as Claude SDK)
+    this._initializeUsageLimitsTracker();
+
     this.httpServer = http.createServer((req, res) => {
       void this._handleRequest(req, res);
     });
@@ -160,6 +168,63 @@ export class GeminiWebServer {
     return this.httpServer;
   }
 
+  // --- Usage Limits Initialization ---
+
+  private _initializeUsageLimitsTracker(): void {
+    try {
+      // Try ANTHROPIC_API_KEY environment variable first
+      let credentials = process.env['ANTHROPIC_API_KEY'];
+
+      if (credentials) {
+        log('Using credentials from ANTHROPIC_API_KEY environment variable');
+      }
+
+      // If not set, try to get from macOS Keychain (same as Claude SDK)
+      if (!credentials && process.platform === 'darwin') {
+        log('Attempting to retrieve credentials from macOS Keychain...');
+        try {
+          const command = 'security find-generic-password -s "Claude Code-credentials" -w';
+          log(`Executing: ${command}`);
+
+          // Capture both stdout and stderr
+          const result = execSync(command, {
+            encoding: 'utf-8',
+            stdio: ['pipe', 'pipe', 'pipe'] // capture stderr instead of ignoring
+          });
+
+          credentials = result.trim();
+          log(`✓ Retrieved credentials from macOS Keychain (length: ${credentials.length})`);
+          log(`Credentials preview: ${credentials.substring(0, 50)}...`);
+        } catch (err: any) {
+          log('✗ Keychain access failed:');
+          log(`  Error type: ${err.constructor.name}`);
+          log(`  Error message: ${err.message}`);
+          if (err.stderr) {
+            log(`  Stderr: ${err.stderr.toString()}`);
+          }
+          if (err.stdout) {
+            log(`  Stdout: ${err.stdout.toString()}`);
+          }
+          log(`  Status code: ${err.status}`);
+        }
+      } else if (!credentials && process.platform !== 'darwin') {
+        log('Skipping keychain access (not on macOS)');
+      }
+
+      if (credentials) {
+        this.usageLimitsTracker = new UsageLimitsTracker(credentials);
+        log('✓ Usage limits tracker initialized');
+      } else {
+        log(
+          '✗ Usage limits tracker not initialized (no ANTHROPIC_API_KEY or keychain credentials)',
+        );
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log('Failed to initialize usage limits tracker:', msg);
+    }
+  }
+
   // --- Persistence ---
 
   private async _loadPersistedSessions(): Promise<void> {
@@ -242,6 +307,19 @@ export class GeminiWebServer {
         instanceId: instData.id,
         sessionId: instData.claudeSessionId,
       });
+    }
+
+    // Restore todos from last known snapshot
+    if (instData.lastSnapshot) {
+      // Usage metrics removed - will be fetched from API instead
+
+      if (instData.lastSnapshot.todos) {
+        bridge.accumulator.todos = instData.lastSnapshot.todos;
+        log('Restored todos from snapshot', {
+          instanceId: instData.id,
+          todoCount: instData.lastSnapshot.todos.items.length,
+        });
+      }
     }
 
     const inst: Instance = {
@@ -800,6 +878,24 @@ export class GeminiWebServer {
         return;
       }
 
+      // Claude usage limits
+      if (url.pathname === '/api/usage-limits' && req.method === 'GET') {
+        fileLog('INFO', 'http', 'GET /api/usage-limits');
+        if (!this.usageLimitsTracker) {
+          sendJson(res, 503, {
+            error: 'Usage tracking not available (ANTHROPIC_API_KEY not set)',
+          });
+          return;
+        }
+        const limits = await this.usageLimitsTracker.getUsageLimits();
+        if (!limits) {
+          sendJson(res, 500, { error: 'Failed to fetch usage limits' });
+          return;
+        }
+        sendJson(res, 200, limits);
+        return;
+      }
+
       // Browse directories
       if (url.pathname === '/api/browse' && req.method === 'GET') {
         this._handleBrowse(url, res);
@@ -1162,11 +1258,12 @@ export class GeminiWebServer {
       return;
     }
 
-    // --- submit / confirm / setModel ---
+    // --- submit / confirm / setModel / togglePlanMode ---
     if (
       cmdType === 'submit' ||
       cmdType === 'confirm' ||
-      cmdType === 'setModel'
+      cmdType === 'setModel' ||
+      cmdType === 'togglePlanMode'
     ) {
       const instanceId =
         typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
@@ -1193,6 +1290,13 @@ export class GeminiWebServer {
           const model = typeof body['model'] === 'string' ? body['model'] : '';
           log('setModel', { instanceId, model, provider: inst.providerName });
           await inst.provider.setModel(model);
+        } else if (cmdType === 'togglePlanMode') {
+          log('togglePlanMode', { instanceId, provider: inst.providerName });
+          if (inst.providerName === 'claude' && 'togglePlanMode' in inst.provider) {
+            await (inst.provider as any).togglePlanMode();
+          } else {
+            throw new Error('togglePlanMode only supported for Claude instances');
+          }
         } else if (cmdType === 'confirm') {
           const callId =
             typeof body['callId'] === 'string' ? body['callId'] : '';
