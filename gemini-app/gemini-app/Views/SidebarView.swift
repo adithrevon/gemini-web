@@ -125,9 +125,9 @@ struct InstanceRowView: View {
     var body: some View {
         Button(action: onSelect) {
             HStack(spacing: Spacing.sm) {
-                // Provider icon + status indicator
+                // Icon + status indicator
                 ZStack(alignment: .bottomTrailing) {
-                    Image(systemName: instance.provider.icon)
+                    Image(systemName: "brain.head.profile")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .frame(width: 16, height: 16)
@@ -190,7 +190,7 @@ struct InstanceRowView: View {
                     pending: [],
                     streamingState: .idle,
                     isTrustedFolder: false,
-                    currentModel: AppConstants.defaultModel,
+                    currentModel: "",
                     availableModels: [],
                     error: nil
                 ),
@@ -202,7 +202,7 @@ struct InstanceRowView: View {
                     pending: [],
                     streamingState: .idle,
                     isTrustedFolder: false,
-                    currentModel: AppConstants.defaultModel,
+                    currentModel: "",
                     availableModels: [],
                     error: nil
                 ),
@@ -214,7 +214,7 @@ struct InstanceRowView: View {
                     pending: [],
                     streamingState: .idle,
                     isTrustedFolder: false,
-                    currentModel: AppConstants.defaultModel,
+                    currentModel: "",
                     availableModels: [],
                     error: "Connection failed"
                 )

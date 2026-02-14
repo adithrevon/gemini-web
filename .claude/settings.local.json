@@ -7,7 +7,15 @@
       "Bash(xcrun xcodebuild:*)",
       "Bash(xcrun devicectl device process launch:*)",
       "Bash(npm run build:*)",
-      "Bash(xargs ls:*)"
+      "Bash(xargs ls:*)",
+      "Bash(npm test:*)",
+      "Bash(pkill:*)",
+      "Bash(git -C /Users/prem/workspace/gemini-web log --oneline -10)",
+      "Bash(ls:*)",
+      "Bash(git -C /Users/prem/workspace/gemini-web show HEAD:packages/web/src/claude-bridge.ts)",
+      "Bash(git -C /Users/prem/workspace/gemini-web show HEAD:packages/web/src/provider.ts)",
+      "Bash(git -C /Users/prem/workspace/gemini-web show HEAD:packages/web/src/ws-handler.ts)",
+      "Bash(git -C /Users/prem/workspace/gemini-web show 575e7f6a --name-status)"
     ]
   }
 }

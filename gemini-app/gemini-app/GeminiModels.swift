@@ -1,50 +1,5 @@
 import Foundation
 
-// MARK: - Provider
-
-enum Provider: String, Codable, CaseIterable {
-    case gemini
-    case claude
-
-    var displayName: String {
-        switch self {
-        case .gemini: return "Gemini"
-        case .claude: return "Claude"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .gemini: return "sparkles"
-        case .claude: return "brain.head.profile"
-        }
-    }
-
-    var defaultModel: String {
-        switch self {
-        case .gemini: return AppConstants.defaultModel
-        case .claude: return "claude-sonnet-4-5-20250929"
-        }
-    }
-
-    var defaultModels: [ModelOption] {
-        switch self {
-        case .gemini:
-            return [
-                ModelOption(value: AppConstants.defaultModel, label: "Auto (Gemini 2.5)", description: "Let CLI decide", isAuto: true),
-                ModelOption(value: "gemini-2.5-pro", label: "Gemini 2.5 Pro", description: nil, isAuto: false),
-                ModelOption(value: "gemini-2.5-flash", label: "Gemini 2.5 Flash", description: nil, isAuto: false),
-            ]
-        case .claude:
-            return [
-                ModelOption(value: "claude-sonnet-4-5-20250929", label: "Sonnet 4.5", description: nil, isAuto: false),
-                ModelOption(value: "claude-opus-4-6", label: "Opus 4.6", description: nil, isAuto: false),
-                ModelOption(value: "claude-haiku-4-5-20251001", label: "Haiku 4.5", description: nil, isAuto: false),
-            ]
-        }
-    }
-}
-
 // MARK: - Streaming State
 
 enum StreamingState: String, Codable {
@@ -156,13 +111,13 @@ struct ConfirmationDetails: Codable {
     let fileDiff: String?
 }
 
-struct ToolCall: Decodable, Identifiable {
+struct ToolCall: Codable, Identifiable {
     let callId: String
     let name: String
     let description: String?
-    let status: String?
-    let resultDisplay: ToolResult?
-    let confirmationDetails: ConfirmationDetails?
+    var status: String?
+    var resultDisplay: ToolResult?
+    var confirmationDetails: ConfirmationDetails?
     let correlationId: String?
 
     var id: String { callId }
@@ -194,7 +149,7 @@ struct ToolCall: Decodable, Identifiable {
     }
 }
 
-enum ToolResult: Decodable {
+enum ToolResult: Codable {
     case text(String)
     case ansi([[AnsiToken]])
     case display(ToolResultDisplay)
@@ -218,6 +173,20 @@ enum ToolResult: Decodable {
             return
         }
         self = .json(.null)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .text(let text):
+            try container.encode(text)
+        case .ansi(let lines):
+            try container.encode(lines)
+        case .display(let display):
+            try container.encode(display)
+        case .json(let value):
+            try container.encode(value)
+        }
     }
 }
 
@@ -310,39 +279,90 @@ struct BridgeUpdatePayload: Decodable {
     let todos: TodoList?
 }
 
-struct SessionInstanceInfo: Codable {
+// MARK: - Session State (new event-based format)
+
+struct InstanceMetadata: Decodable {
     let id: String
     let projectPath: String
-    let connected: Bool
-    let status: InstanceStatus?
-    let error: String?
-    let provider: Provider?
+    let yolo: Bool
 }
 
 struct SessionStateMessage: Decodable {
     let type: String
     let sessionId: String
-    let activeInstanceId: String?
-    let instances: [SessionInstanceInfo]
-    let snapshots: [BridgeUpdatePayload]
+    let instances: [InstanceMetadata]
 }
+
+// MARK: - Claude Event Types
+
+struct ClaudeToolInfo: Decodable {
+    let callId: String
+    let name: String
+    let input: [String: JSONValue]?
+    let description: String
+}
+
+struct ClaudeTextDeltaEvent: Decodable {
+    let instanceId: String
+    let text: String
+    let seq: Int
+}
+
+struct ClaudeTextCompleteEvent: Decodable {
+    let instanceId: String
+    let text: String
+    let seq: Int
+}
+
+struct ClaudeToolAddedEvent: Decodable {
+    let instanceId: String
+    let tool: ClaudeToolInfo
+    let confirmationDetails: ConfirmationDetails?
+    let seq: Int
+}
+
+struct ClaudeToolStatusEvent: Decodable {
+    let instanceId: String
+    let toolId: String
+    let status: String
+    let seq: Int
+}
+
+struct ClaudeToolResultEvent: Decodable {
+    let instanceId: String
+    let toolId: String
+    let result: JSONValue?
+    let seq: Int
+}
+
+struct ClaudeStreamingStateEvent: Decodable {
+    let instanceId: String
+    let state: StreamingState
+    let seq: Int
+}
+
+struct ClaudeModelsAvailableEvent: Decodable {
+    let instanceId: String
+    let models: [ModelOption]
+    let seq: Int
+}
+
+struct ClaudeSessionCompleteEvent: Decodable {
+    let instanceId: String
+    let sessionId: String
+    let seq: Int
+}
+
+struct ServerRestartedEvent: Decodable {
+    let message: String
+    let seq: Int
+}
+
+// MARK: - Legacy types (kept for backward compat)
 
 struct BridgeUpdateMessage: Decodable {
     let type: String
     let payload: BridgeUpdatePayload
-}
-
-struct BridgeCliStatusMessage: Decodable {
-    let type: String
-    let connected: Bool
-    let instanceId: String?
-    let status: InstanceStatus?
-    let error: String?
-}
-
-struct BridgeInstanceListMessage: Decodable {
-    let type: String
-    let instances: [SessionInstanceInfo]
 }
 
 struct BridgeErrorMessage: Decodable {
@@ -351,7 +371,7 @@ struct BridgeErrorMessage: Decodable {
     let error: String
 }
 
-enum Message: Decodable {
+enum Message: Codable {
     case user(String)
     case gemini(String)
     case geminiContent(String)
@@ -383,14 +403,44 @@ enum Message: Decodable {
             self = .gemini("")
         }
     }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .user(let text):
+            try container.encode("user", forKey: .type)
+            try container.encode(text, forKey: .text)
+        case .gemini(let text):
+            try container.encode("gemini", forKey: .type)
+            try container.encode(text, forKey: .text)
+        case .geminiContent(let text):
+            try container.encode("gemini_content", forKey: .type)
+            try container.encode(text, forKey: .text)
+        case .toolGroup(let tools):
+            try container.encode("tool_group", forKey: .type)
+            try container.encode(tools, forKey: .tools)
+        }
+    }
 }
 
 enum IncomingMessage: Decodable {
+    // Session lifecycle
     case sessionState(SessionStateMessage)
-    case bridgeUpdate(BridgeUpdateMessage)
-    case cliStatus(BridgeCliStatusMessage)
-    case instanceList(BridgeInstanceListMessage)
     case bridgeError(BridgeErrorMessage)
+
+    // Claude events (event-based architecture)
+    case claudeTextDelta(ClaudeTextDeltaEvent)
+    case claudeTextComplete(ClaudeTextCompleteEvent)
+    case claudeToolAdded(ClaudeToolAddedEvent)
+    case claudeToolStatus(ClaudeToolStatusEvent)
+    case claudeToolResult(ClaudeToolResultEvent)
+    case claudeStreamingState(ClaudeStreamingStateEvent)
+    case claudeModelsAvailable(ClaudeModelsAvailableEvent)
+    case claudeSessionComplete(ClaudeSessionCompleteEvent)
+    case serverRestarted(ServerRestartedEvent)
+
+    // Legacy (kept for backward compat)
+    case bridgeUpdate(BridgeUpdateMessage)
     case unknown(String)
 
     private enum CodingKeys: String, CodingKey {
@@ -403,14 +453,28 @@ enum IncomingMessage: Decodable {
         switch type {
         case "session_state":
             self = .sessionState(try SessionStateMessage(from: decoder))
-        case "bridge:update":
-            self = .bridgeUpdate(try BridgeUpdateMessage(from: decoder))
-        case "bridge:cli-status":
-            self = .cliStatus(try BridgeCliStatusMessage(from: decoder))
-        case "bridge:instance-list":
-            self = .instanceList(try BridgeInstanceListMessage(from: decoder))
         case "bridge:error":
             self = .bridgeError(try BridgeErrorMessage(from: decoder))
+        case "claude:text_delta":
+            self = .claudeTextDelta(try ClaudeTextDeltaEvent(from: decoder))
+        case "claude:text_complete":
+            self = .claudeTextComplete(try ClaudeTextCompleteEvent(from: decoder))
+        case "claude:tool_added":
+            self = .claudeToolAdded(try ClaudeToolAddedEvent(from: decoder))
+        case "claude:tool_status":
+            self = .claudeToolStatus(try ClaudeToolStatusEvent(from: decoder))
+        case "claude:tool_result":
+            self = .claudeToolResult(try ClaudeToolResultEvent(from: decoder))
+        case "claude:streaming_state":
+            self = .claudeStreamingState(try ClaudeStreamingStateEvent(from: decoder))
+        case "claude:models_available":
+            self = .claudeModelsAvailable(try ClaudeModelsAvailableEvent(from: decoder))
+        case "claude:session_complete":
+            self = .claudeSessionComplete(try ClaudeSessionCompleteEvent(from: decoder))
+        case "server:restarted":
+            self = .serverRestarted(try ServerRestartedEvent(from: decoder))
+        case "bridge:update":
+            self = .bridgeUpdate(try BridgeUpdateMessage(from: decoder))
         default:
             self = .unknown(type)
         }
@@ -428,7 +492,8 @@ enum OutgoingMessage: Encodable {
     case confirm(instanceId: String, callId: String, outcome: ConfirmOutcome, correlationId: String?)
     case setModel(instanceId: String, model: String)
     case togglePlanMode(instanceId: String)
-    case spawnInstance(projectPath: String, provider: Provider = .gemini, yolo: Bool = false)
+    case toggleYolo(instanceId: String, yolo: Bool)
+    case spawnInstance(projectPath: String, yolo: Bool = false)
     case terminateInstance(instanceId: String)
     case setActiveInstance(instanceId: String)
     case interrupt(instanceId: String)
@@ -442,7 +507,6 @@ enum OutgoingMessage: Encodable {
         case correlationId
         case model
         case projectPath
-        case provider
         case yolo
     }
 
@@ -466,10 +530,13 @@ enum OutgoingMessage: Encodable {
         case .togglePlanMode(let instanceId):
             try container.encode("togglePlanMode", forKey: .type)
             try container.encode(instanceId, forKey: .instanceId)
-        case .spawnInstance(let projectPath, let provider, let yolo):
+        case .toggleYolo(let instanceId, let yolo):
+            try container.encode("toggleYolo", forKey: .type)
+            try container.encode(instanceId, forKey: .instanceId)
+            try container.encode(yolo, forKey: .yolo)
+        case .spawnInstance(let projectPath, let yolo):
             try container.encode("spawnInstance", forKey: .type)
             try container.encode(projectPath, forKey: .projectPath)
-            try container.encode(provider, forKey: .provider)
             try container.encode(yolo, forKey: .yolo)
         case .terminateInstance(let instanceId):
             try container.encode("terminateInstance", forKey: .type)
@@ -500,10 +567,12 @@ struct InstanceState: Identifiable {
     var currentModel: String
     var availableModels: [ModelOption]
     var error: String?
-    var provider: Provider = .gemini
     var usageMetrics: UsageMetrics?
     var todos: TodoList?
     var planModeActive: Bool = false
+    var yolo: Bool = false
+    var isSudoTransitioning: Bool = false
+    var isTextAccumulating: Bool = false
 }
 
 // MARK: - Directory Browsing

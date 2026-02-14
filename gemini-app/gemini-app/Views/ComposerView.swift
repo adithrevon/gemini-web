@@ -12,9 +12,10 @@ struct ComposerView: View {
     let streamingState: StreamingState
     let maxLines: Int
     let modelSelector: ModelSelectorConfig?
-    let provider: Provider?
     let planModeActive: Bool
     let onTogglePlanMode: (() -> Void)?
+    let sudoToggle: SudoToggleConfig?
+    let alwaysExpanded: Bool  // For new chat - always show bottom controls
 
     let onSubmit: (String) -> Void
     let onInterrupt: (() -> Void)?
@@ -42,7 +43,7 @@ struct ComposerView: View {
     }
 
     private var expanded: Bool {
-        (isFocused == true) || !isEmpty || isRecording || isPaused || isStreaming
+        alwaysExpanded || (isFocused == true) || !isEmpty || isRecording || isPaused || isStreaming
     }
 
     private var canSubmit: Bool {
@@ -68,7 +69,8 @@ struct ComposerView: View {
 
                 inputRow
 
-                if expanded {
+                // Hide bottom controls when streaming - only show stop button in input row
+                if expanded && !isStreaming {
                     bottomControls
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
@@ -98,11 +100,11 @@ struct ComposerView: View {
     private var inputRow: some View {
         HStack(alignment: .bottom, spacing: 8) {
             growingTextField
-            // Trailing action: stop while streaming, otherwise mic when collapsed
+            // Trailing action: stop while streaming, otherwise mic when collapsed and text is empty
             if isStreaming {
                 stopButton
                     .transition(.scale.combined(with: .opacity))
-            } else if !expanded {
+            } else if !expanded && isEmpty {
                 micButton
                     .transition(.scale.combined(with: .opacity))
             }
@@ -153,6 +155,7 @@ struct ComposerView: View {
 
     private var micAndSendControls: some View {
         HStack(spacing: 12) {
+            // Model selector (always shown when available)
             if let config = modelSelector {
                 ModelSelectorView(
                     currentModel: config.currentModel,
@@ -163,8 +166,8 @@ struct ComposerView: View {
                 }
             }
 
-            // Claude-specific: Plan mode toggle
-            if provider == .claude, let onToggle = onTogglePlanMode {
+            // Plan mode toggle
+            if let onToggle = onTogglePlanMode {
                 ClaudePlanModeToggle(
                     isActive: Binding(
                         get: { planModeActive },
@@ -175,7 +178,18 @@ struct ComposerView: View {
 
             Spacer()
 
-            if !isStreaming {
+            // Sudo icon button (right-aligned, small, no text)
+            if let config = sudoToggle {
+                SudoIconButton(
+                    isOn: config.isOn,
+                    disabled: config.disabled,
+                    isTransitioning: config.isTransitioning,
+                    onChange: config.onChange
+                )
+            }
+
+            // All buttons on the right
+            if !isStreaming && isEmpty {
                 micButton
             }
             if !isEmpty {
@@ -321,6 +335,15 @@ struct ModelSelectorConfig {
     let onSelect: (String) -> Void
 }
 
+// MARK: - Sudo Toggle Config
+
+struct SudoToggleConfig {
+    let isOn: Binding<Bool>
+    let disabled: Bool
+    let isTransitioning: Binding<Bool>
+    let onChange: (Bool) -> Void
+}
+
 // MARK: - Model Selector
 
 struct ModelSelectorView: View {
@@ -330,13 +353,6 @@ struct ModelSelectorView: View {
     let onSelect: (String) -> Void
 
     private var displayModels: [ModelOption] {
-        if availableModels.isEmpty {
-            return [
-                ModelOption(value: AppConstants.defaultModel, label: "Auto (Gemini 2.5)", description: "Let CLI decide", isAuto: true),
-                ModelOption(value: "gemini-2.5-pro", label: "Gemini 2.5 Pro", description: nil, isAuto: false),
-                ModelOption(value: "gemini-2.5-flash", label: "Gemini 2.5 Flash", description: nil, isAuto: false)
-            ]
-        }
         return availableModels
     }
 
@@ -345,47 +361,81 @@ struct ModelSelectorView: View {
     }
 
     var body: some View {
-        Menu {
-            ForEach(displayModels) { model in
-                Button {
-                    onSelect(model.value)
-                } label: {
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(model.label)
-                            if let desc = model.description {
-                                Text(desc)
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
+        // Only show picker if models are available
+        if !displayModels.isEmpty {
+            Menu {
+                ForEach(displayModels) { model in
+                    Button {
+                        onSelect(model.value)
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(model.label)
+                                if let desc = model.description {
+                                    Text(desc)
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
-                        }
-                        Spacer()
-                        if model.value == currentModel {
-                            Image(systemName: "checkmark")
-                                .foregroundStyle(Color.accentColor)
+                            Spacer()
+                            if model.value == currentModel {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(Color.accentColor)
+                            }
                         }
                     }
                 }
+            } label: {
+                HStack(spacing: Spacing.xs) {
+                    Image(systemName: "cpu")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(currentLabel)
+                        .font(.caption)
+                        .foregroundStyle(.primary)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.vertical, Spacing.sm)
+                .padding(.horizontal, Spacing.md)
+                .background(Color.surfaceSecondary.opacity(0.8))
+                .clipShape(Capsule())
             }
-        } label: {
-            HStack(spacing: Spacing.xs) {
-                Image(systemName: "cpu")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text(currentLabel)
-                    .font(.caption)
-                    .foregroundStyle(.primary)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(.vertical, Spacing.sm)
-            .padding(.horizontal, Spacing.md)
-            .background(Color.surfaceSecondary.opacity(0.8))
-            .clipShape(Capsule())
+            .menuStyle(.borderlessButton)
+            .disabled(disabled)
         }
-        .menuStyle(.borderlessButton)
-        .disabled(disabled)
+    }
+}
+
+// MARK: - Sudo Icon Button
+
+struct SudoIconButton: View {
+    let isOn: Binding<Bool>
+    let disabled: Bool
+    let isTransitioning: Binding<Bool>
+    let onChange: (Bool) -> Void
+
+    var body: some View {
+        Button(action: {
+            isOn.wrappedValue.toggle()
+            onChange(isOn.wrappedValue)
+        }) {
+            ZStack {
+                if isTransitioning.wrappedValue {
+                    ProgressView()
+                        .scaleEffect(0.7)
+                        .frame(width: 28, height: 28)
+                } else {
+                    Image(systemName: isOn.wrappedValue ? "exclamationmark.triangle.fill" : "bolt.shield")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(isOn.wrappedValue ? Color.orange : .secondary)
+                        .frame(width: 28, height: 28)
+                }
+            }
+        }
+        .disabled(disabled || isTransitioning.wrappedValue)
+        .opacity(disabled ? 0.5 : 1.0)
     }
 }
 

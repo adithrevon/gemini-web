@@ -5,12 +5,15 @@
 ### 1. ✅ Usage Limits API Not Working
 
 **Problem:**
+
 - Usage limits endpoint returned 401 Unauthorized
 - Used wrong authentication method (`x-api-key` instead of OAuth Bearer token)
 - Didn't extract access token from macOS Keychain JSON structure
 
 **Root Cause:**
-- Keychain stores OAuth credentials as JSON: `{"claudeAiOauth":{"accessToken":"..."}}`
+
+- Keychain stores OAuth credentials as JSON:
+  `{"claudeAiOauth":{"accessToken":"..."}}`
 - Need to parse JSON and use `Authorization: Bearer` header, not `x-api-key`
 
 **Fixes Applied:**
@@ -25,6 +28,7 @@
    - Falls back to `ANTHROPIC_API_KEY` environment variable
 
 **Test Results:**
+
 ```
 ✅ API call successful: 200 OK
 ✅ Returns: five_hour (9%), seven_day (19%) with reset timestamps
@@ -35,19 +39,23 @@
 ### 2. ✅ Plan Mode Gets Turned Off After Sending Message
 
 **Problem:**
+
 - User toggles plan mode ON
 - Sends a message
 - Plan mode immediately resets to OFF
 - Claude reports it's NOT in plan mode
 
 **Root Cause:**
-- `SessionStore.applyBridgeUpdate()` recreates `InstanceState` on every backend update
+
+- `SessionStore.applyBridgeUpdate()` recreates `InstanceState` on every backend
+  update
 - Doesn't preserve the `planModeActive` field from existing state
 - Local UI state gets overwritten by SSE updates
 
 **Fixes Applied:**
 
 1. **`gemini-app/gemini-app/SessionStore.swift:415`**
+
    ```swift
    // Before: planModeActive was lost
    instances[payload.instanceId] = InstanceState(...)
@@ -67,12 +75,14 @@
 ### 3. ✅ Backend Doesn't Send Plan Mode to Claude SDK
 
 **Problem:**
+
 - iOS app toggles plan mode
 - Backend receives the toggle command
 - But doesn't actually tell Claude SDK to use plan mode
 - Claude operates in normal mode despite UI showing "Plan Mode Active"
 
 **Root Cause:**
+
 - No backend implementation to:
   - Track plan mode state in `ClaudeBridge`
   - Pass `permissionMode: 'plan'` to Claude SDK
@@ -84,6 +94,7 @@
    - Added `_planModeActive` field to track state
    - Added `togglePlanMode()` and `getPlanModeActive()` methods
    - Modified SDK options to use `permissionMode: 'plan'` when active:
+
    ```typescript
    if (this._planModeActive) {
      options['permissionMode'] = 'plan';
@@ -172,17 +183,21 @@ iOS receives update via applyBridgeUpdate()
 ## Files Modified
 
 ### Backend
+
 - ✅ `packages/web/src/usage-limits.ts` - OAuth token extraction, Bearer auth
 - ✅ `packages/web/src/server.ts` - Keychain integration, togglePlanMode handler
 - ✅ `packages/web/src/claude-bridge.ts` - Plan mode state, SDK integration
 - ✅ `packages/web/src/types.ts` - Added planModeActive field
 
 ### iOS
-- ✅ `gemini-app/gemini-app/SessionStore.swift` - Preserve planModeActive, call backend
+
+- ✅ `gemini-app/gemini-app/SessionStore.swift` - Preserve planModeActive, call
+  backend
 - ✅ `gemini-app/gemini-app/SessionService.swift` - togglePlanMode command
 - ✅ `gemini-app/gemini-app/GeminiModels.swift` - OutgoingMessage enum
 
 ### Test Scripts
+
 - ✅ `test-usage-api.mjs` - Verified OAuth API works
 
 ---

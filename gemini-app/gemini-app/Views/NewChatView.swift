@@ -3,11 +3,10 @@ import SwiftUI
 struct NewChatView: View {
     let recentProjects: [String]
     let initialProject: String?
-    let initialProvider: Provider
     let composerDisabled: Bool
     let connected: Bool
     let status: InstanceStatus?
-    let onProjectSelected: (String, Provider, Bool, String) -> Void  // path, provider, yolo, model
+    let onProjectSelected: (String, Bool, String) -> Void  // path, yolo, model
     let onSubmitMessage: (String) -> Void
     let onCancel: (() -> Void)?
     let onOpenSettings: () -> Void
@@ -16,12 +15,12 @@ struct NewChatView: View {
     @State private var selectedProject: String = ""
     @State private var didSendMessage = false
     @State private var showBrowser = false
-    @State private var selectedProvider: Provider = .gemini
     @State private var sudoMode: Bool = false
-    @State private var selectedModel: String = Provider.gemini.defaultModel
+    @State private var selectedModel: String = ""
     @State private var hasInitialized = false
+    @State private var isSudoTransitioning = false
     #if os(iOS)
-    @State private var keyboardHeight: CGFloat = 0
+    @State private var keyboardIsVisible = false
     #endif
 
     private var isConnecting: Bool {
@@ -30,152 +29,130 @@ struct NewChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Hero section - centered in available space
-            VStack(spacing: Spacing.lg) {
-                Spacer()
+            // Hero section - scrollable content with keyboard-aware animations
+            ScrollView {
+                VStack(spacing: keyboardIsVisible ? Spacing.sm : Spacing.lg) {
+                    Spacer()
+                        .frame(minHeight: keyboardIsVisible ? 10 : 40)
 
-                // Animated icon (or offline icon)
-                ZStack {
+                    // Animated icon (or offline icon) - moves up with keyboard
+                    ZStack {
+                        if !connected {
+                            Image(systemName: "wifi.exclamationmark")
+                                .font(.system(size: keyboardIsVisible ? 36 : 48))
+                                .foregroundStyle(Color.statusError.gradient)
+                        } else if isConnecting {
+                            ConnectionAnimationView()
+                        } else {
+                            Image(systemName: "brain.head.profile")
+                                .font(.system(size: keyboardIsVisible ? 36 : 48))
+                                .foregroundStyle(Color.accentColor.gradient)
+                        }
+                    }
+                    .frame(height: keyboardIsVisible ? 50 : 80)
+
+                    Text(!connected ? "Server Offline" : (isConnecting ? "Connecting..." : "Let's build"))
+                        .font(keyboardIsVisible ? .title2 : .heroTitle)
+                        .animation(.easeInOut, value: isConnecting)
+                        .animation(.easeInOut, value: connected)
+
                     if !connected {
-                        Image(systemName: "wifi.exclamationmark")
-                            .font(.system(size: 48))
-                            .foregroundStyle(Color.statusError.gradient)
-                    } else if isConnecting {
-                        ConnectionAnimationView()
-                    } else {
-                        Image(systemName: selectedProvider.icon)
-                            .font(.system(size: 48))
-                            .foregroundStyle(Color.accentColor.gradient)
-                    }
-                }
-                .frame(height: 80)
+                        // Offline message with Settings button
+                        VStack(spacing: Spacing.sm) {
+                            Text("Cannot connect to backend server")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
 
-                Text(!connected ? "Server Offline" : (isConnecting ? "Connecting..." : "Let's build"))
-                    .font(.heroTitle)
-                    .animation(.easeInOut, value: isConnecting)
-                    .animation(.easeInOut, value: connected)
-
-                if !connected {
-                    // Offline message with Settings button
-                    VStack(spacing: Spacing.sm) {
-                        Text("Cannot connect to backend server")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-
-                        Button(action: onOpenSettings) {
-                            HStack(spacing: 6) {
-                                Image(systemName: "gear")
-                                    .font(.caption.weight(.medium))
-                                Text("Open Settings")
-                                    .font(.caption.weight(.medium))
+                            Button(action: onOpenSettings) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "gear")
+                                        .font(.caption.weight(.medium))
+                                    Text("Open Settings")
+                                        .font(.caption.weight(.medium))
+                                }
+                                .padding(.horizontal, Spacing.md)
+                                .padding(.vertical, 6)
+                                .background(Color.accentColor)
+                                .foregroundColor(.white)
+                                .cornerRadius(CornerRadius.small)
                             }
-                            .padding(.horizontal, Spacing.md)
-                            .padding(.vertical, 6)
-                            .background(Color.accentColor)
-                            .foregroundColor(.white)
-                            .cornerRadius(CornerRadius.small)
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
-                    }
-                    .frame(maxWidth: 260)
-                } else {
-                    // Provider picker
-                    Picker("Provider", selection: $selectedProvider) {
-                        ForEach(Provider.allCases, id: \.self) { provider in
-                            Label(provider.displayName, systemImage: provider.icon)
-                                .tag(provider)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .frame(maxWidth: 260)
-                    .disabled(!connected)
-                    .onChange(of: selectedProvider) { _, newProvider in
-                        // Update model to provider default
-                        selectedModel = newProvider.defaultModel
-                        // When provider changes and a project is already selected,
-                        // re-spawn with the new provider
-                        if !selectedProject.isEmpty {
-                            onProjectSelected(selectedProject, newProvider, sudoMode, selectedModel)
-                        }
+                        .frame(maxWidth: 260)
+                    } else {
+                        ProjectSelectorView(
+                            selectedProject: $selectedProject,
+                            recentProjects: recentProjects,
+                            disabled: isConnecting || !connected,
+                            onSelect: { path in
+                                onProjectSelected(path, sudoMode, selectedModel)
+                            },
+                            onBrowse: {
+                                showBrowser = true
+                            }
+                        )
+                        .frame(maxWidth: 400)
                     }
 
-                    Toggle(isOn: $sudoMode) {
-                        Label("Sudo", systemImage: "bolt.shield")
-                            .font(.subheadline)
-                    }
-                    .toggleStyle(.switch)
-                    .frame(maxWidth: 260)
-                    .disabled(!connected)
-
-                    ModelSelectorView(
-                        currentModel: selectedModel,
-                        availableModels: selectedProvider.defaultModels,
-                        disabled: isConnecting,
-                        onSelect: { model in
-                            selectedModel = model
-                        }
-                    )
-                    .opacity(connected ? 1.0 : 0.5)
-
-                    ProjectSelectorView(
-                        selectedProject: $selectedProject,
-                        recentProjects: recentProjects,
-                        disabled: isConnecting || !connected,
-                        onSelect: { path in
-                            onProjectSelected(path, selectedProvider, sudoMode, selectedModel)
-                        },
-                        onBrowse: {
-                            showBrowser = true
-                        }
-                    )
-                    .frame(maxWidth: 400)
+                    Spacer()
+                        .frame(minHeight: keyboardIsVisible ? 10 : 40)
                 }
-
-                Spacer()
+                .padding(.horizontal, Spacing.lg)
+                .padding(.bottom, keyboardIsVisible ? Spacing.sm : Spacing.lg)
+                .animation(.spring(response: 0.3, dampingFraction: 0.8), value: keyboardIsVisible)
             }
-            .padding(.horizontal, Spacing.lg)
             .layoutPriority(1)
-
-            Spacer(minLength: 0)
 
             ComposerView(
                 disabled: composerDisabled || selectedProject.isEmpty,
                 streamingState: .idle,
-                maxLines: 4,
-                modelSelector: nil,
-                provider: nil,
+                maxLines: 6,
+                modelSelector: ModelSelectorConfig(
+                    currentModel: selectedModel,
+                    availableModels: [],
+                    disabled: composerDisabled || isConnecting,
+                    onSelect: { model in
+                        selectedModel = model
+                    }
+                ),
                 planModeActive: false,
                 onTogglePlanMode: nil,
+                sudoToggle: SudoToggleConfig(
+                    isOn: $sudoMode,
+                    disabled: !connected || isConnecting,
+                    isTransitioning: $isSudoTransitioning,
+                    onChange: { _ in
+                        // Re-spawn with new sudo mode if project is selected
+                        if !selectedProject.isEmpty {
+                            onProjectSelected(selectedProject, sudoMode, selectedModel)
+                        }
+                    }
+                ),
+                alwaysExpanded: true,
                 onSubmit: { text in
                     didSendMessage = true
                     onSubmitMessage(text)
                 },
                 onInterrupt: nil
             )
-            #if os(iOS)
-            .padding(.bottom, keyboardHeight)
-            #endif
         }
         #if os(iOS)
-        .ignoresSafeArea(.keyboard, edges: .bottom)
-        #endif
-        #if os(iOS)
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
-            guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
-            let screenHeight = UIScreen.main.bounds.height
-            let height = max(0, screenHeight - frame.origin.y)
-            keyboardHeight = height
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                keyboardIsVisible = true
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            keyboardHeight = 0
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                keyboardIsVisible = false
+            }
         }
         #endif
         .onAppear {
             guard !hasInitialized else { return }
             hasInitialized = true
-            selectedProvider = initialProvider
-            selectedModel = initialProvider.defaultModel
+            selectedModel = ""  // Will be populated by backend
             if let initial = initialProject {
                 selectedProject = initial
             }
@@ -196,7 +173,7 @@ struct NewChatView: View {
                 isPresented: $showBrowser,
                 onSelect: { path in
                     selectedProject = path
-                    onProjectSelected(path, selectedProvider, sudoMode, selectedModel)
+                    onProjectSelected(path, sudoMode, selectedModel)
                 },
                 sessionStore: sessionStore
             )
@@ -257,11 +234,10 @@ struct ConnectionAnimationView: View {
             "/Users/test/another-project"
         ],
         initialProject: nil,
-        initialProvider: .gemini,
         composerDisabled: false,
         connected: false,
         status: .connecting,
-        onProjectSelected: { _, _, _, _ in },
+        onProjectSelected: { _, _, _ in },
         onSubmitMessage: { _ in },
         onCancel: nil,
         onOpenSettings: { },

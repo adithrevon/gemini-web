@@ -7,12 +7,7 @@ struct DetailPanelContainer: View {
     var body: some View {
         if showPanel, let instance = instance {
             VStack(spacing: 0) {
-                switch instance.provider {
-                case .claude:
-                    ClaudeDetailPanel(instance: instance)
-                case .gemini:
-                    GeminiDetailPanel(instance: instance)
-                }
+                ClaudeDetailPanel(instance: instance)
             }
             .frame(width: 300)
             .background(Color(uiColor: .systemBackground))
@@ -22,9 +17,9 @@ struct DetailPanelContainer: View {
 
 // MARK: - Preview
 
-#Preview("Claude Instance") {
+#Preview("With Instance") {
     DetailPanelContainer(instance: InstanceState(
-        id: "claude-test",
+        id: "test",
         projectPath: "/tmp/test",
         status: .connected,
         history: [],
@@ -34,7 +29,6 @@ struct DetailPanelContainer: View {
         currentModel: "claude-sonnet-4-5-20250929",
         availableModels: [],
         error: nil,
-        provider: .claude,
         usageMetrics: UsageMetrics(
             totalInputTokens: 1500,
             totalOutputTokens: 800,
@@ -66,25 +60,6 @@ struct DetailPanelContainer: View {
             ],
             lastUpdated: "2026-02-12T10:00:00Z"
         ),
-        planModeActive: false
-    ))
-}
-
-#Preview("Gemini Instance") {
-    DetailPanelContainer(instance: InstanceState(
-        id: "gemini-test",
-        projectPath: "/tmp/test",
-        status: .connected,
-        history: [],
-        pending: [],
-        streamingState: .idle,
-        isTrustedFolder: true,
-        currentModel: "auto-gemini-2.5",
-        availableModels: [],
-        error: nil,
-        provider: .gemini,
-        usageMetrics: nil,
-        todos: nil,
         planModeActive: false
     ))
 }

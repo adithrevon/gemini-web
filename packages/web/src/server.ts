@@ -1,65 +1,39 @@
 import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
-import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
-import { readdirSync, statSync, existsSync, mkdirSync } from 'node:fs';
-import { WebSocketServer, WebSocket } from 'ws';
+import { existsSync, mkdirSync } from 'node:fs';
 
-import type { Provider } from './provider.js';
-import type {
-  ServerConfig,
-  InstanceStatus,
-  ProviderName,
-  BridgeUpdatePayload,
-  SessionInstanceInfo,
-  SseEvent,
-  PersistedData,
-  PersistedSession,
-  PersistedInstance,
-} from './types.js';
-import { GeminiBridge } from './gemini-bridge.js';
-import { ClaudeBridge } from './claude-bridge.js';
-import { handleWsConnection } from './ws-handler.js';
+import type { ServerConfig } from './types.js';
+import { SessionManager } from './session-manager.js';
+import { InstanceManager } from './instance-manager.js';
+import { BrowseManager } from './browse-manager.js';
 import {
   readJsonBody,
   sendJson,
-  sendSse,
   resolveProjectPath,
 } from './utils.js';
-import { log, logInfo, logCommand, fileLog, logFilePath } from './logger.js';
+import { logger, logCommand, logFilePath, createLogger } from './logger.js';
 import { SessionPersistence } from './persistence.js';
 import { UsageLimitsTracker } from './usage-limits.js';
 
-// --- Internal types ---
+const serverLog = createLogger('server');
 
-interface Instance {
-  id: string;
-  sessionId: string | null;
-  provider: Provider;
-  providerName: ProviderName;
-  projectPath: string;
-  status: InstanceStatus;
-  error: string | null;
-  lastSnapshot: BridgeUpdatePayload | null;
-}
-
-interface Session {
-  id: string;
-  activeInstanceId: string | null;
-  instances: Set<string>;
-  sseClients: Set<http.ServerResponse>;
-  lastSeenAt: number;
-}
-
-// --- Server ---
-
+/**
+ * ClaudeWebServer - HTTP server for Claude web bridge.
+ *
+ * Responsibilities:
+ * - HTTP server lifecycle (listen, close)
+ * - Route incoming requests to appropriate handlers
+ * - Coordinate SessionManager and InstanceManager
+ * - Persistence on startup/shutdown
+ */
 export class GeminiWebServer {
   private config: ServerConfig;
-  private sessions = new Map<string, Session>();
-  private instances = new Map<string, Instance>();
   private httpServer: http.Server;
-  private wss: WebSocketServer;
+  private sessionManager: SessionManager;
+  private instanceManager: InstanceManager;
+  private browseManager: BrowseManager;
   private persistence: SessionPersistence;
   private usageLimitsTracker: UsageLimitsTracker | null = null;
 
@@ -67,32 +41,29 @@ export class GeminiWebServer {
     this.config = config;
 
     // Initialize persistence
-    const persistDir = path.join(os.homedir(), '.gemini-web');
+    const persistDir = path.join(os.homedir(), '.claude-web');
     if (!existsSync(persistDir)) {
       mkdirSync(persistDir, { recursive: true });
     }
     const persistFile = path.join(persistDir, 'sessions.json');
     this.persistence = new SessionPersistence(persistFile);
 
+    // Initialize managers
+    this.sessionManager = new SessionManager(this.persistence);
+    this.instanceManager = new InstanceManager(this.sessionManager);
+    this.browseManager = new BrowseManager();
+
     // Initialize usage limits tracker
-    // Try to get credentials from keychain (same as Claude SDK)
     this._initializeUsageLimitsTracker();
 
+    // Create HTTP server
     this.httpServer = http.createServer((req, res) => {
       void this._handleRequest(req, res);
     });
-    this.wss = new WebSocketServer({
-      server: this.httpServer,
-      path: config.wsPath,
-    });
-    this._setupWss();
   }
 
   async listen(port?: number): Promise<number> {
     const p = port ?? this.config.port;
-
-    // Load persisted sessions BEFORE starting HTTP server
-    await this._loadPersistedSessions();
 
     return new Promise((resolve, reject) => {
       this.httpServer.once('error', (err: NodeJS.ErrnoException) => {
@@ -118,7 +89,7 @@ export class GeminiWebServer {
         console.log(`[web] Logs → ${logFilePath}`);
         if (!this.config.debug) {
           console.log(
-            `[web] Set GEMINI_WEB_DEBUG=1 for verbose console output.`,
+            `[web] Set CLAUDE_WEB_DEBUG=1 for verbose console output.`,
           );
         }
         resolve(actualPort);
@@ -127,39 +98,25 @@ export class GeminiWebServer {
   }
 
   async close(): Promise<void> {
-    log('Server shutting down...');
+    serverLog.debug('Server shutting down');
 
     // Persist final state immediately (bypass debounce)
     try {
-      const data = this._buildPersistedData();
-      await this.persistence.writeNow(data);
-      log('Persisted final state on shutdown');
+      const persistedInstances = this.instanceManager.buildPersistedInstances();
+      const data = this.sessionManager.buildPersistedData(persistedInstances);
+      await this.sessionManager.persistNow(data);
+      serverLog.debug('Persisted final state on shutdown');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log('Failed to persist on shutdown:', msg);
+      serverLog.debug('Failed to persist on shutdown', { error: msg });
     }
 
-    // Clean up persistence timer
-    this.persistence.cleanup();
+    // Clean up instances and sessions
+    this.instanceManager.terminateAll();
+    this.sessionManager.cleanup();
 
     return new Promise((resolve) => {
-      // Clean up all instances
-      for (const instanceId of [...this.instances.keys()]) {
-        this._terminateInstance(instanceId);
-      }
-      // Close all SSE connections
-      for (const session of this.sessions.values()) {
-        for (const res of session.sseClients) {
-          try {
-            res.end();
-          } catch {
-            /* ignore */
-          }
-        }
-      }
-      this.wss.close(() => {
-        this.httpServer.close(() => resolve());
-      });
+      this.httpServer.close(() => resolve());
     });
   }
 
@@ -168,7 +125,7 @@ export class GeminiWebServer {
     return this.httpServer;
   }
 
-  // --- Usage Limits Initialization ---
+  // --- Private Methods ---
 
   private _initializeUsageLimitsTracker(): void {
     try {
@@ -176,850 +133,155 @@ export class GeminiWebServer {
       let credentials = process.env['ANTHROPIC_API_KEY'];
 
       if (credentials) {
-        log('Using credentials from ANTHROPIC_API_KEY environment variable');
+        serverLog.info('Using credentials from ANTHROPIC_API_KEY');
       }
 
       // If not set, try to get from macOS Keychain (same as Claude SDK)
       if (!credentials && process.platform === 'darwin') {
-        log('Attempting to retrieve credentials from macOS Keychain...');
+        serverLog.info('Attempting to retrieve credentials from macOS Keychain');
         try {
           const command = 'security find-generic-password -s "Claude Code-credentials" -w';
-          log(`Executing: ${command}`);
 
           // Capture both stdout and stderr
           const result = execSync(command, {
             encoding: 'utf-8',
-            stdio: ['pipe', 'pipe', 'pipe'] // capture stderr instead of ignoring
+            stdio: ['pipe', 'pipe', 'pipe'], // capture stderr instead of ignoring
           });
 
           credentials = result.trim();
-          log(`✓ Retrieved credentials from macOS Keychain (length: ${credentials.length})`);
-          log(`Credentials preview: ${credentials.substring(0, 50)}...`);
         } catch (err: any) {
-          log('✗ Keychain access failed:');
-          log(`  Error type: ${err.constructor.name}`);
-          log(`  Error message: ${err.message}`);
-          if (err.stderr) {
-            log(`  Stderr: ${err.stderr.toString()}`);
-          }
-          if (err.stdout) {
-            log(`  Stdout: ${err.stdout.toString()}`);
-          }
-          log(`  Status code: ${err.status}`);
+          serverLog.warn('Keychain access failed');
         }
       } else if (!credentials && process.platform !== 'darwin') {
-        log('Skipping keychain access (not on macOS)');
+        serverLog.info('Skipping keychain access (not on macOS)');
       }
 
       if (credentials) {
         this.usageLimitsTracker = new UsageLimitsTracker(credentials);
-        log('✓ Usage limits tracker initialized');
-      } else {
-        log(
-          '✗ Usage limits tracker not initialized (no ANTHROPIC_API_KEY or keychain credentials)',
-        );
+        serverLog.info('Usage limits tracker initialized');
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log('Failed to initialize usage limits tracker:', msg);
+      serverLog.warn('Failed to initialize usage limits tracker', { error: msg });
     }
   }
 
-  // --- Persistence ---
-
-  private async _loadPersistedSessions(): Promise<void> {
-    try {
-      const data = await this.persistence.load();
-
-      log(`Loading ${data.sessions.length} persisted sessions`);
-
-      for (const sessionData of data.sessions) {
-        // Restore session object
-        const session: Session = {
-          id: sessionData.id,
-          activeInstanceId: sessionData.activeInstanceId,
-          instances: new Set(sessionData.instances.map((i) => i.id)),
-          sseClients: new Set(),
-          lastSeenAt: sessionData.lastSeenAt,
-        };
-        this.sessions.set(session.id, session);
-
-        // Restore instances based on provider
-        for (const instData of sessionData.instances) {
-          if (instData.providerName === 'claude') {
-            await this._restoreClaudeInstance(instData, session.id);
-          } else if (instData.providerName === 'gemini') {
-            await this._restoreGeminiInstance(instData, session.id);
-          }
-        }
-      }
-
-      log(
-        `Restored ${this.sessions.size} sessions, ${this.instances.size} instances`,
-      );
-
-      // Log active instance IDs for verification
-      for (const [sessionId, session] of this.sessions) {
-        log('Session restored', {
-          sessionId: sessionId.slice(0, 8),
-          activeInstanceId: session.activeInstanceId?.slice(0, 8) ?? null,
-          instanceCount: session.instances.size,
-        });
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log('Failed to load persisted sessions:', msg);
-    }
-  }
-
-  private async _restoreClaudeInstance(
-    instData: PersistedInstance,
+  private _buildInstanceMetadata(
     sessionId: string,
-  ): Promise<void> {
-    log('Restoring Claude instance', {
-      instanceId: instData.id,
-      claudeSessionId: instData.claudeSessionId,
-    });
-
-    const emitUpdate = (snapshot: {
-      type: 'bridge:update';
-      payload: BridgeUpdatePayload;
-    }) => {
-      const inst = this.instances.get(instData.id);
-      if (!inst) return;
-      inst.lastSnapshot = snapshot.payload;
-      this._sendToSession(sessionId, snapshot);
-      this._persistState();
-    };
-
-    const bridge = new ClaudeBridge({
-      instanceId: instData.id,
-      projectPath: instData.projectPath,
-      emitUpdate,
-      yolo: false,
-    });
-
-    // CRITICAL: Restore Claude SDK session ID
-    if (instData.claudeSessionId) {
-      (bridge as unknown as { _sessionId: string })._sessionId =
-        instData.claudeSessionId;
-      log('Restored Claude SDK session ID', {
-        instanceId: instData.id,
-        sessionId: instData.claudeSessionId,
-      });
-    }
-
-    // Restore todos from last known snapshot
-    if (instData.lastSnapshot) {
-      // Usage metrics removed - will be fetched from API instead
-
-      if (instData.lastSnapshot.todos) {
-        bridge.accumulator.todos = instData.lastSnapshot.todos;
-        log('Restored todos from snapshot', {
-          instanceId: instData.id,
-          todoCount: instData.lastSnapshot.todos.items.length,
-        });
-      }
-    }
-
-    const inst: Instance = {
-      id: instData.id,
-      sessionId,
-      provider: bridge,
-      providerName: 'claude',
-      projectPath: instData.projectPath,
-      status: 'disconnected',
-      error: null,
-      lastSnapshot: instData.lastSnapshot,
-    };
-    this.instances.set(instData.id, inst);
-
-    const session = this.sessions.get(sessionId);
+  ): Map<string, { projectPath: string; yolo: boolean }> {
+    const metadata = new Map<string, { projectPath: string; yolo: boolean }>();
+    const session = this.sessionManager.getSession(sessionId);
     if (session) {
-      session.instances.add(instData.id);
-    }
-
-    try {
-      await bridge.start();
-      inst.status = 'connected';
-      log('Claude instance restored successfully', { instanceId: instData.id });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      inst.status = 'error';
-      inst.error = msg;
-      log('Claude instance restoration failed', {
-        instanceId: instData.id,
-        error: msg,
-      });
-    }
-  }
-
-  private async _restoreGeminiInstance(
-    instData: PersistedInstance,
-    sessionId: string,
-  ): Promise<void> {
-    log('Restoring Gemini instance', {
-      instanceId: instData.id,
-      geminiSessionId: instData.geminiSessionId,
-    });
-
-    // Spawn with --resume flag, mark as restoring to preserve activeInstanceId
-    await this._spawnGeminiInstance(
-      instData.id,
-      instData.projectPath,
-      sessionId,
-      instData.projectPath,
-      false,
-      instData.geminiSessionId,
-      true, // isRestoring = true
-    );
-  }
-
-  private _buildPersistedData(): PersistedData {
-    const data: PersistedData = {
-      version: 1,
-      lastUpdated: new Date().toISOString(),
-      sessions: [],
-    };
-
-    for (const [sessionId, session] of this.sessions) {
-      const sessionData: PersistedSession = {
-        id: sessionId,
-        activeInstanceId: session.activeInstanceId,
-        lastSeenAt: session.lastSeenAt,
-        instances: [],
-      };
-
       for (const instanceId of session.instances) {
-        const inst = this.instances.get(instanceId);
-        if (!inst) continue;
-
-        const instData: PersistedInstance = {
-          id: inst.id,
-          sessionId: inst.sessionId,
-          provider: inst.providerName,
-          providerName: inst.providerName,
-          projectPath: inst.projectPath,
-          status: inst.status,
-          error: inst.error,
-          lastSnapshot: inst.lastSnapshot,
-        };
-
-        // Extract provider-specific session IDs
-        if (inst.providerName === 'claude') {
-          const claudeBridge = inst.provider as ClaudeBridge;
-          instData.claudeSessionId =
-            (claudeBridge as unknown as { _sessionId: string | null })
-              ._sessionId ?? undefined;
-        } else if (inst.providerName === 'gemini') {
-          const geminiBridge = inst.provider as GeminiBridge;
-          instData.geminiSessionId = geminiBridge.geminiSessionId;
+        const inst = this.instanceManager.getInstance(instanceId);
+        if (inst) {
+          metadata.set(instanceId, {
+            projectPath: inst.projectPath,
+            yolo: inst.bridge.yolo,
+          });
         }
-
-        sessionData.instances.push(instData);
       }
-
-      data.sessions.push(sessionData);
     }
-
-    return data;
+    return metadata;
   }
 
   private _persistState(): void {
-    const data = this._buildPersistedData();
-    this.persistence.scheduleWrite(data);
+    const persistedInstances = this.instanceManager.buildPersistedInstances();
+    const data = this.sessionManager.buildPersistedData(persistedInstances);
+    this.sessionManager.schedulePersistence(data);
   }
 
-  // --- Session management ---
-
-  private _createSession(): Session {
-    const id = crypto.randomUUID();
-    const session: Session = {
-      id,
-      activeInstanceId: null,
-      instances: new Set(),
-      sseClients: new Set(),
-      lastSeenAt: Date.now(),
-    };
-    this.sessions.set(id, session);
-    this._persistState();
-    return session;
-  }
-
-  private _getSessionInstances(sessionId: string): SessionInstanceInfo[] {
-    const session = this.sessions.get(sessionId);
-    if (!session) return [];
-    const list: SessionInstanceInfo[] = [];
-    for (const instanceId of session.instances) {
-      const inst = this.instances.get(instanceId);
-      if (!inst) continue;
-      list.push({
-        id: inst.id,
-        projectPath: inst.projectPath,
-        connected: inst.status === 'connected',
-        status: inst.status,
-        error: inst.error,
-        provider: inst.providerName,
-      });
-    }
-    return list;
-  }
-
-  private _sendToSession(
-    sessionId: string,
-    payload: SseEvent | Record<string, unknown>,
-  ): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-    session.lastSeenAt = Date.now();
-    for (const res of session.sseClients) {
-      try {
-        sendSse(res, payload);
-      } catch {
-        session.sseClients.delete(res);
-      }
-    }
-  }
-
-  private _broadcastToAllSessions(
-    payload: SseEvent | Record<string, unknown>,
-  ): void {
-    for (const session of this.sessions.values()) {
-      this._sendToSession(session.id, payload);
-    }
-  }
-
-  private _sendInstanceList(sessionId: string): void {
-    const instancesList = this._getSessionInstances(sessionId);
-    this._sendToSession(sessionId, {
-      type: 'bridge:instance-list',
-      instances: instancesList,
-    });
-  }
-
-  private _sendSessionState(session: Session, res: http.ServerResponse): void {
-    const instancesList = this._getSessionInstances(session.id);
-    const snapshots: BridgeUpdatePayload[] = [];
-    for (const instInfo of instancesList) {
-      const inst = this.instances.get(instInfo.id);
-      if (inst?.lastSnapshot) {
-        snapshots.push(inst.lastSnapshot);
-      }
-    }
-    sendSse(res, {
-      type: 'session_state',
-      sessionId: session.id,
-      activeInstanceId: session.activeInstanceId ?? null,
-      instances: instancesList,
-      snapshots,
-    });
-  }
-
-  // --- Instance lifecycle ---
-
-  private _markInstanceError(instanceId: string, message: string): void {
-    const inst = this.instances.get(instanceId);
-    if (!inst) return;
-    inst.status = 'error';
-    inst.error = message;
-    if (inst.sessionId) {
-      this._sendToSession(inst.sessionId, {
-        type: 'bridge:error',
-        instanceId,
-        error: message,
-      });
-      this._sendToSession(inst.sessionId, {
-        type: 'bridge:cli-status',
-        connected: false,
-        instanceId,
-        status: 'error' as const,
-        error: message,
-      });
-      this._sendInstanceList(inst.sessionId);
-    }
-  }
-
-  private async _spawnGeminiInstance(
-    instanceId: string,
-    projectPath: string,
-    sessionId: string,
-    resolvedPath: string,
-    yolo = false,
-    resumeSessionId?: string,
-    isRestoring = false,
-  ): Promise<void> {
-    const callbacks = {
-      onStatusChange: (
-        status: 'connecting' | 'connected' | 'disconnected' | 'error',
-        error?: string,
-      ) => {
-        const inst = this.instances.get(instanceId);
-        if (!inst) return;
-        inst.status = status;
-        if (error) inst.error = error;
-        else if (status === 'connected') inst.error = null;
-
-        if (status === 'connected') {
-          logInfo(
-            `gemini CLI connected for instance ${instanceId.slice(0, 8)}…`,
-          );
-        } else if (status === 'error') {
-          logInfo(
-            `gemini instance ${instanceId.slice(0, 8)}… error: ${error ?? 'unknown'}`,
-          );
-        }
-
-        if (inst.sessionId) {
-          this._sendToSession(inst.sessionId, {
-            type: 'bridge:cli-status',
-            connected: status === 'connected',
-            instanceId,
-            status,
-            error: error ?? null,
-          });
-          this._sendInstanceList(inst.sessionId);
-        } else {
-          this._broadcastToAllSessions({
-            type: 'bridge:cli-status',
-            connected: status === 'connected',
-            instanceId,
-            status,
-            error: error ?? null,
-          });
-        }
-      },
-      onBridgeUpdate: (payload: BridgeUpdatePayload) => {
-        const inst = this.instances.get(instanceId);
-        if (!inst) return;
-        inst.lastSnapshot = payload;
-        if (payload.projectPath) {
-          inst.projectPath = payload.projectPath;
-        }
-        const event = { type: 'bridge:update' as const, payload };
-        if (inst.sessionId) {
-          this._sendToSession(inst.sessionId, event);
-        } else {
-          this._broadcastToAllSessions(event);
-        }
-        this._persistState();
-      },
-      onExit: () => {
-        this._cleanupInstance(instanceId, 'exit');
-      },
-      onError: (message: string) => {
-        this._markInstanceError(instanceId, message);
-      },
-    };
-
-    const bridge = new GeminiBridge({
-      instanceId,
-      projectPath: resolvedPath,
-      config: this.config,
-      callbacks,
-      yolo,
-      resumeSessionId,
-    });
-
-    const inst: Instance = {
-      id: instanceId,
-      sessionId,
-      provider: bridge,
-      providerName: 'gemini',
-      projectPath: resolvedPath,
-      status: 'connecting',
-      error: null,
-      lastSnapshot: null,
-    };
-    this.instances.set(instanceId, inst);
-
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      session.instances.add(instanceId);
-      // Only set as active instance when creating NEW instances, not when restoring
-      if (!isRestoring) {
-        session.activeInstanceId = instanceId;
-      }
-    }
-
-    this._sendToSession(sessionId, {
-      type: 'bridge:cli-status',
-      connected: false,
-      instanceId,
-      status: 'connecting' as const,
-    });
-    this._sendInstanceList(sessionId);
-
-    await bridge.start();
-    this._persistState();
-  }
-
-  private async _spawnClaudeInstance(
-    instanceId: string,
-    projectPath: string,
-    sessionId: string,
-    resolvedPath: string,
-    yolo = false,
-    isRestoring = false,
-  ): Promise<void> {
-    log('spawn claude', {
-      instanceId,
-      requestedPath: projectPath,
-      resolvedPath,
-    });
-
-    const emitUpdate = (snapshot: {
-      type: 'bridge:update';
-      payload: BridgeUpdatePayload;
-    }) => {
-      const inst = this.instances.get(instanceId);
-      if (!inst) return;
-      inst.lastSnapshot = snapshot.payload;
-      this._sendToSession(sessionId, snapshot);
-      this._persistState();
-    };
-
-    const bridge = new ClaudeBridge({
-      instanceId,
-      projectPath: resolvedPath,
-      emitUpdate,
-      yolo,
-    });
-
-    const inst: Instance = {
-      id: instanceId,
-      sessionId,
-      provider: bridge,
-      providerName: 'claude',
-      projectPath: resolvedPath,
-      status: 'connecting',
-      error: null,
-      lastSnapshot: null,
-    };
-    this.instances.set(instanceId, inst);
-
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      session.instances.add(instanceId);
-      // Only set as active instance when creating NEW instances, not when restoring
-      if (!isRestoring) {
-        session.activeInstanceId = instanceId;
-      }
-    }
-
-    this._sendToSession(sessionId, {
-      type: 'bridge:cli-status',
-      connected: false,
-      instanceId,
-      status: 'connecting' as const,
-    });
-    this._sendInstanceList(sessionId);
-
-    try {
-      await bridge.start();
-      inst.status = 'connected';
-      inst.error = null;
-
-      this._sendToSession(sessionId, {
-        type: 'bridge:cli-status',
-        connected: true,
-        instanceId,
-        status: 'connected' as const,
-      });
-      this._sendInstanceList(sessionId);
-
-      // Emit initial empty snapshot
-      emitUpdate({
-        type: 'bridge:update',
-        payload: bridge.accumulator.snapshot(),
-      });
-
-      this._persistState();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log('Claude spawn error:', msg);
-      this._markInstanceError(instanceId, msg || 'Claude SDK not available');
-    }
-  }
-
-  private _cleanupInstance(instanceId: string, reason: string): void {
-    const inst = this.instances.get(instanceId);
-    if (!inst) return;
-    inst.provider.destroy();
-    const sessionId = inst.sessionId;
-    this.instances.delete(instanceId);
-    if (sessionId) {
-      const session = this.sessions.get(sessionId);
-      if (session) {
-        session.instances.delete(instanceId);
-        if (session.activeInstanceId === instanceId) {
-          session.activeInstanceId = null;
-        }
-      }
-      this._sendToSession(sessionId, {
-        type: 'bridge:cli-status',
-        connected: false,
-        instanceId,
-        status: 'disconnected' as const,
-      });
-      this._sendInstanceList(sessionId);
-    } else if (reason !== 'exit') {
-      this._broadcastToAllSessions({
-        type: 'bridge:cli-status',
-        connected: false,
-        instanceId,
-        status: 'disconnected' as const,
-      });
-    }
-    this._persistState();
-  }
-
-  private _terminateInstance(instanceId: string): void {
-    const inst = this.instances.get(instanceId);
-    if (!inst) {
-      log('terminate: instance not found', instanceId);
-      return;
-    }
-    log('terminate instance', instanceId);
-    inst.provider.destroy();
-    this._cleanupInstance(instanceId, 'terminate');
-  }
-
-  // --- WebSocket setup ---
-
-  private _setupWss(): void {
-    this.wss.on('connection', (socket: WebSocket) => {
-      handleWsConnection(socket, {
-        getGeminiBridge: (instanceId: string): GeminiBridge | null => {
-          const inst = this.instances.get(instanceId);
-          if (!inst || inst.providerName !== 'gemini') return null;
-          return inst.provider as GeminiBridge;
-        },
-        onOrphanCliConnect: (
-          instanceId: string,
-          socket: WebSocket,
-          payload: BridgeUpdatePayload,
-        ) => {
-          // CLI connected but we didn't spawn it — create orphan instance entry
-          const bridge = new GeminiBridge({
-            instanceId,
-            projectPath: payload.projectPath ?? '',
-            config: this.config,
-            callbacks: {
-              onStatusChange: (status, error) => {
-                const inst = this.instances.get(instanceId);
-                if (!inst) return;
-                inst.status = status;
-                if (error) inst.error = error;
-                this._broadcastToAllSessions({
-                  type: 'bridge:cli-status',
-                  connected: status === 'connected',
-                  instanceId,
-                  status,
-                  error: error ?? null,
-                });
-              },
-              onBridgeUpdate: (p) => {
-                const inst = this.instances.get(instanceId);
-                if (!inst) return;
-                inst.lastSnapshot = p;
-                this._broadcastToAllSessions({
-                  type: 'bridge:update',
-                  payload: p,
-                });
-                this._persistState();
-              },
-              onExit: () => this._cleanupInstance(instanceId, 'exit'),
-              onError: (msg) => this._markInstanceError(instanceId, msg),
-            },
-          });
-          bridge.bindSocket(socket);
-          const inst: Instance = {
-            id: instanceId,
-            sessionId: null,
-            provider: bridge,
-            providerName: 'gemini',
-            projectPath: payload.projectPath ?? '',
-            status: 'connected',
-            error: null,
-            lastSnapshot: payload,
-          };
-          this.instances.set(instanceId, inst);
-          this._broadcastToAllSessions({
-            type: 'bridge:cli-status',
-            connected: true,
-            instanceId,
-            status: 'connected' as const,
-          });
-        },
-      });
-    });
-
-    this.wss.on('error', () => {
-      // Avoid crashing on transient websocket errors.
-    });
-  }
-
-  // --- HTTP request handling ---
+  // --- HTTP Request Handling ---
 
   private async _handleRequest(
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ): Promise<void> {
     try {
+      // Set CORS headers for all requests
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+      // Handle preflight OPTIONS requests
+      if (req.method === 'OPTIONS') {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+
       const url = new URL(
         req.url ?? '/',
         `http://${req.headers.host ?? 'localhost'}`,
       );
 
-      // Health check
+      // Route to appropriate handler
       if (url.pathname === '/health' && req.method === 'GET') {
-        fileLog('INFO', 'http', 'GET /health');
-        sendJson(res, 200, { status: 'ok', timestamp: Date.now() });
+        this._handleHealth(res);
         return;
       }
 
-      // Claude usage limits
       if (url.pathname === '/api/usage-limits' && req.method === 'GET') {
-        fileLog('INFO', 'http', 'GET /api/usage-limits');
-        if (!this.usageLimitsTracker) {
-          sendJson(res, 503, {
-            error: 'Usage tracking not available (ANTHROPIC_API_KEY not set)',
-          });
-          return;
-        }
-        const limits = await this.usageLimitsTracker.getUsageLimits();
-        if (!limits) {
-          sendJson(res, 500, { error: 'Failed to fetch usage limits' });
-          return;
-        }
-        sendJson(res, 200, limits);
+        await this._handleUsageLimits(res);
         return;
       }
 
-      // Browse directories
       if (url.pathname === '/api/browse' && req.method === 'GET') {
         this._handleBrowse(url, res);
         return;
       }
 
-      // Validate path
       if (url.pathname === '/api/validate-path' && req.method === 'GET') {
         this._handleValidatePath(url, res);
         return;
       }
 
-      // Create/resume session
       if (url.pathname === '/api/session' && req.method === 'POST') {
-        const body = (await readJsonBody(req)) as Record<
-          string,
-          unknown
-        > | null;
-        const requestedId =
-          body && typeof body['sessionId'] === 'string'
-            ? body['sessionId']
-            : null;
-        const session =
-          requestedId && this.sessions.has(requestedId)
-            ? this.sessions.get(requestedId)!
-            : this._createSession();
-        session.lastSeenAt = Date.now();
-        logInfo(
-          `session ${session.id.slice(0, 8)}… (${requestedId ? 'resumed' : 'new'})`,
-        );
-        sendJson(res, 200, { sessionId: session.id });
+        await this._handleCreateSession(req, res);
         return;
       }
 
-      // Session routes
       if (url.pathname.startsWith('/api/session/')) {
-        const parts = url.pathname.split('/').filter(Boolean);
-        const rawSessionId = parts[2];
-        const action = parts[3];
-        const sessionId = rawSessionId
-          ? decodeURIComponent(rawSessionId)
-          : null;
-        if (!sessionId) {
-          sendJson(res, 404, { error: 'Session not found' });
-          return;
-        }
-        const session = this.sessions.get(sessionId);
-        if (!session) {
-          sendJson(res, 404, { error: 'Session not found' });
-          return;
-        }
-
-        if (action === 'events' && req.method === 'GET') {
-          this._handleSseEvents(session, req, res);
-          return;
-        }
-
-        if (action === 'command' && req.method === 'POST') {
-          await this._handleCommand(session, req, res);
-          return;
-        }
-
-        sendJson(res, 404, { error: 'Not found' });
+        await this._handleSessionRoute(url, req, res);
         return;
       }
 
       res.writeHead(404);
       res.end('Not found');
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Internal server error';
+      serverLog.error('Request handler error', { error: msg });
       res.writeHead(500);
       res.end('Internal server error');
     }
   }
 
-  private _handleBrowse(url: URL, res: http.ServerResponse): void {
-    const dirPath = url.searchParams.get('path') || os.homedir();
-    try {
-      const resolvedPath = dirPath.startsWith('~')
-        ? path.join(os.homedir(), dirPath.slice(1))
-        : path.resolve(dirPath);
+  private _handleHealth(res: http.ServerResponse): void {
+    serverLog.debug('HTTP GET /health');
+    sendJson(res, 200, { status: 'ok', timestamp: Date.now() });
+  }
 
-      const entries = readdirSync(resolvedPath, { withFileTypes: true });
-
-      const directories = entries
-        .filter((entry) => {
-          if (entry.name.startsWith('.')) return false;
-          try {
-            return entry.isDirectory();
-          } catch {
-            return false;
-          }
-        })
-        .map((entry) => ({
-          name: entry.name,
-          path: path.join(resolvedPath, entry.name),
-        }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-
-      const projectIndicators = [
-        'package.json',
-        '.git',
-        'Cargo.toml',
-        'go.mod',
-        'pyproject.toml',
-        'Gemfile',
-        '.xcodeproj',
-        '.xcworkspace',
-      ];
-      const isProject = entries.some((e) =>
-        projectIndicators.some(
-          (indicator) =>
-            e.name === indicator ||
-            e.name.endsWith('.xcodeproj') ||
-            e.name.endsWith('.xcworkspace'),
-        ),
-      );
-
-      sendJson(res, 200, {
-        path: resolvedPath,
-        parent: path.dirname(resolvedPath),
-        directories,
-        isProject,
-        name: path.basename(resolvedPath),
+  private async _handleUsageLimits(res: http.ServerResponse): Promise<void> {
+    serverLog.debug('HTTP GET /api/usage-limits');
+    if (!this.usageLimitsTracker) {
+      sendJson(res, 503, {
+        error: 'Usage tracking not available (ANTHROPIC_API_KEY not set)',
       });
+      return;
+    }
+    const limits = await this.usageLimitsTracker.getUsageLimits();
+    if (!limits) {
+      sendJson(res, 500, { error: 'Failed to fetch usage limits' });
+      return;
+    }
+    sendJson(res, 200, limits);
+  }
+
+  private _handleBrowse(url: URL, res: http.ServerResponse): void {
+    const dirPath = url.searchParams.get('path') || undefined;
+    try {
+      const listing = this.browseManager.browse(dirPath);
+      sendJson(res, 200, listing);
     } catch (err: unknown) {
       const msg =
         err instanceof Error ? err.message : 'Failed to read directory';
@@ -1030,49 +292,108 @@ export class GeminiWebServer {
   private _handleValidatePath(url: URL, res: http.ServerResponse): void {
     const dirPath = url.searchParams.get('path');
     if (!dirPath) {
-      sendJson(res, 400, { error: 'Missing path parameter' });
+      sendJson(res, 400, { error: 'Missing path parameter', valid: false });
       return;
     }
-    try {
-      const resolvedPath = dirPath.startsWith('~')
-        ? path.join(os.homedir(), dirPath.slice(1))
-        : path.resolve(dirPath);
 
-      const stat = statSync(resolvedPath);
-      if (!stat.isDirectory()) {
-        sendJson(res, 400, { error: 'Path is not a directory', valid: false });
+    const validation = this.browseManager.validatePath(dirPath);
+    const statusCode = validation.valid ? 200 : 400;
+    sendJson(res, statusCode, validation);
+  }
+
+  private async _handleCreateSession(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    const body = (await readJsonBody(req)) as Record<string, unknown> | null;
+    const requestedId =
+      body && typeof body['sessionId'] === 'string' ? body['sessionId'] : null;
+
+    let session = requestedId ? this.sessionManager.getSession(requestedId) : null;
+
+    // Try restoring from persistence if not in memory
+    if (!session && requestedId) {
+      const restored = await this.sessionManager.restoreSession(requestedId);
+      if (restored) {
+        const data = await this.persistence.load();
+        const sessionData = data.sessions.find((s) => s.id === requestedId);
+        if (sessionData) {
+          for (const instData of sessionData.instances) {
+            await this.instanceManager.restoreInstance(requestedId, instData);
+          }
+        }
+        session = restored;
+      }
+    }
+
+    if (!session) {
+      session = this.sessionManager.createSession();
+      this._persistState();
+    }
+
+    logger.info(
+      `session ${session.id.slice(0, 8)}… (${requestedId ? 'resumed' : 'new'})`,
+    );
+    sendJson(res, 200, { sessionId: session.id });
+  }
+
+  private async _handleSessionRoute(
+    url: URL,
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    const parts = url.pathname.split('/').filter(Boolean);
+    const rawSessionId = parts[2];
+    const action = parts[3];
+    const sessionId = rawSessionId ? decodeURIComponent(rawSessionId) : null;
+
+    if (!sessionId) {
+      sendJson(res, 404, { error: 'Session not found' });
+      return;
+    }
+
+    let session = this.sessionManager.getSession(sessionId);
+
+    // On-demand session restoration
+    if (!session) {
+      serverLog.debug('Session not in memory, attempting restore from persistence', {
+        sessionId,
+      });
+
+      const restored = await this.sessionManager.restoreSession(sessionId);
+      if (!restored) {
+        sendJson(res, 404, { error: 'Session not found' });
         return;
       }
 
-      const entries = readdirSync(resolvedPath);
-      const projectIndicators = [
-        'package.json',
-        '.git',
-        'Cargo.toml',
-        'go.mod',
-        'pyproject.toml',
-        'Gemfile',
-      ];
-      const isProject = entries.some(
-        (e) =>
-          projectIndicators.includes(e) ||
-          e.endsWith('.xcodeproj') ||
-          e.endsWith('.xcworkspace'),
-      );
+      // Restore instances for this session
+      const data = await this.persistence.load();
+      const sessionData = data.sessions.find((s) => s.id === sessionId);
+      if (sessionData) {
+        for (const instData of sessionData.instances) {
+          await this.instanceManager.restoreInstance(sessionId, instData);
+        }
+      }
 
-      sendJson(res, 200, {
-        valid: true,
-        path: resolvedPath,
-        name: path.basename(resolvedPath),
-        isProject,
-      });
-    } catch {
-      sendJson(res, 400, { error: 'Directory does not exist', valid: false });
+      session = restored;
     }
+
+    if (action === 'events' && req.method === 'GET') {
+      this._handleSseEvents(session.id, url, req, res);
+      return;
+    }
+
+    if (action === 'command' && req.method === 'POST') {
+      await this._handleCommand(session.id, req, res);
+      return;
+    }
+
+    sendJson(res, 404, { error: 'Not found' });
   }
 
   private _handleSseEvents(
-    session: Session,
+    sessionId: string,
+    url: URL,
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ): void {
@@ -1084,17 +405,36 @@ export class GeminiWebServer {
     });
     res.write('\n');
 
-    session.sseClients.add(res);
-    session.lastSeenAt = Date.now();
-    this._sendSessionState(session, res);
+    // Parse 'since' parameter for event replay
+    const sinceParam = url.searchParams.get('since');
+    const since = sinceParam ? parseInt(sinceParam, 10) : 0;
+
+    // Try to replay buffered events if 'since' is provided
+    if (since > 0) {
+      const replaySuccess = this.sessionManager.replayEvents(sessionId, since, res);
+
+      if (!replaySuccess) {
+        // Buffer unavailable (server restarted or events too old)
+        this.sessionManager.sendServerRestarted(sessionId, res);
+      }
+    }
+
+    // Add client for live streaming
+    this.sessionManager.addSseClient(sessionId, res);
+
+    // Send current session state with instance metadata
+    this.sessionManager.sendSessionState(
+      sessionId,
+      this._buildInstanceMetadata(sessionId),
+    );
 
     req.on('close', () => {
-      session.sseClients.delete(res);
+      this.sessionManager.removeSseClient(sessionId, res);
     });
   }
 
   private async _handleCommand(
-    session: Session,
+    sessionId: string,
     req: http.IncomingMessage,
     res: http.ServerResponse,
   ): Promise<void> {
@@ -1103,248 +443,187 @@ export class GeminiWebServer {
       sendJson(res, 400, { error: 'Invalid payload' });
       return;
     }
-    session.lastSeenAt = Date.now();
-    const sessionId = session.id;
+
     const cmdType = body['type'] as string;
 
-    // --- spawnInstance ---
-    if (cmdType === 'spawnInstance') {
-      const projectPath =
-        typeof body['projectPath'] === 'string' ? body['projectPath'] : '';
-      if (!projectPath) {
-        logCommand(sessionId, body, {
-          status: 400,
-          error: 'Missing projectPath',
-        });
-        sendJson(res, 400, { error: 'Missing projectPath' });
+    try {
+      if (cmdType === 'spawnInstance') {
+        await this._handleSpawnInstance(sessionId, body, res);
         return;
       }
-      const providerStr =
-        typeof body['provider'] === 'string' ? body['provider'] : 'gemini';
-      const yolo = body['yolo'] === true;
-      const instanceId = crypto.randomUUID();
-      const resolved = resolveProjectPath(projectPath, this.config.rootDir);
-      logInfo(
-        `spawn ${providerStr} instance ${instanceId.slice(0, 8)}… at ${resolved}${yolo ? ' (yolo)' : ''}`,
-      );
 
-      if (providerStr === 'claude') {
-        void this._spawnClaudeInstance(
-          instanceId,
-          projectPath,
-          sessionId,
-          resolved,
-          yolo,
-        );
-      } else {
-        void this._spawnGeminiInstance(
-          instanceId,
-          projectPath,
-          sessionId,
-          resolved,
-          yolo,
-        );
+      if (cmdType === 'terminateInstance') {
+        await this._handleTerminateInstance(sessionId, body, res);
+        return;
       }
+
+      if (cmdType === 'interrupt') {
+        await this._handleInterrupt(sessionId, body, res);
+        return;
+      }
+
+      if (
+        cmdType === 'submit' ||
+        cmdType === 'confirm' ||
+        cmdType === 'setModel' ||
+        cmdType === 'togglePlanMode' ||
+        cmdType === 'toggleYolo'
+      ) {
+        await this._handleInstanceCommand(sessionId, cmdType, body, res);
+        return;
+      }
+
+      sendJson(res, 400, { error: 'Unsupported command' });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      serverLog.error('Command error', { cmdType, error: msg });
+      logCommand(sessionId, body, { status: 500, error: msg });
+      sendJson(res, 500, { error: msg });
+    }
+  }
+
+  private async _handleSpawnInstance(
+    sessionId: string,
+    body: Record<string, unknown>,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    const projectPath =
+      typeof body['projectPath'] === 'string' ? body['projectPath'] : '';
+    if (!projectPath) {
+      logCommand(sessionId, body, { status: 400, error: 'Missing projectPath' });
+      sendJson(res, 400, { error: 'Missing projectPath' });
+      return;
+    }
+
+    const yolo = body['yolo'] === true;
+    const resolved = resolveProjectPath(projectPath, this.config.rootDir);
+
+    try {
+      const instanceId = await this.instanceManager.spawnInstance(
+        sessionId,
+        resolved,
+        yolo,
+      );
+      this._persistState();
+
       const resp = { instanceId, resolvedPath: resolved };
       logCommand(sessionId, body, { status: 200, ...resp });
       sendJson(res, 200, resp);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logCommand(sessionId, body, { status: 500, error: msg });
+      sendJson(res, 500, { error: msg });
+    }
+  }
+
+  private async _handleTerminateInstance(
+    sessionId: string,
+    body: Record<string, unknown>,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    const instanceId =
+      typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
+    if (!instanceId) {
+      logCommand(sessionId, body, { status: 400, error: 'Missing instanceId' });
+      sendJson(res, 400, { error: 'Missing instanceId' });
       return;
     }
 
-    // --- terminateInstance ---
-    if (cmdType === 'terminateInstance') {
-      const instanceId =
-        typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
-      if (!instanceId) {
-        logCommand(sessionId, body, {
-          status: 400,
-          error: 'Missing instanceId',
-        });
-        sendJson(res, 400, { error: 'Missing instanceId' });
-        return;
-      }
-      const inst = this.instances.get(instanceId);
-      if (!inst || inst.sessionId !== sessionId) {
-        logCommand(sessionId, body, {
-          status: 403,
-          error: 'Instance not found in session',
-        });
-        sendJson(res, 403, { error: 'Instance not found in session' });
-        return;
-      }
-      logInfo(
-        `terminate ${inst.providerName} instance ${instanceId.slice(0, 8)}…`,
-      );
-      this._terminateInstance(instanceId);
+    const inst = this.instanceManager.getInstance(instanceId);
+    if (!inst || inst.sessionId !== sessionId) {
+      logCommand(sessionId, body, {
+        status: 403,
+        error: 'Instance not found in session',
+      });
+      sendJson(res, 403, { error: 'Instance not found in session' });
+      return;
+    }
+
+    this.instanceManager.terminateInstance(instanceId);
+    this._persistState();
+
+    logCommand(sessionId, body, { status: 200, ok: true });
+    sendJson(res, 200, { ok: true });
+  }
+
+  private async _handleInterrupt(
+    sessionId: string,
+    body: Record<string, unknown>,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    const instanceId =
+      typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
+    if (!instanceId) {
+      sendJson(res, 400, { error: 'Missing instanceId' });
+      return;
+    }
+
+    const inst = this.instanceManager.getInstance(instanceId);
+    if (!inst || inst.sessionId !== sessionId) {
+      sendJson(res, 403, { error: 'Instance not found in session' });
+      return;
+    }
+
+    try {
+      await this.instanceManager.interrupt(instanceId);
       logCommand(sessionId, body, { status: 200, ok: true });
       sendJson(res, 200, { ok: true });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      serverLog.error('Interrupt error', { error: msg });
+      logCommand(sessionId, body, {
+        status: 500,
+        error: 'Failed to interrupt',
+      });
+      sendJson(res, 500, { error: 'Failed to interrupt' });
+    }
+  }
+
+  private async _handleInstanceCommand(
+    sessionId: string,
+    cmdType: string,
+    body: Record<string, unknown>,
+    res: http.ServerResponse,
+  ): Promise<void> {
+    const instanceId =
+      typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
+    if (!instanceId) {
+      sendJson(res, 400, { error: 'Missing instanceId' });
       return;
     }
 
-    // --- setActiveInstance ---
-    if (cmdType === 'setActiveInstance') {
-      const instanceId =
-        typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
-      if (instanceId) {
-        const inst = this.instances.get(instanceId);
-        if (!inst || inst.sessionId !== sessionId) {
-          logCommand(sessionId, body, {
-            status: 403,
-            error: 'Instance not found in session',
-          });
-          sendJson(res, 403, { error: 'Instance not found in session' });
-          return;
-        }
+    const inst = this.instanceManager.getInstance(instanceId);
+    if (!inst || inst.sessionId !== sessionId) {
+      sendJson(res, 403, { error: 'Instance not found in session' });
+      return;
+    }
+
+    if (cmdType === 'submit') {
+      const text = typeof body['text'] === 'string' ? body['text'] : '';
+      await this.instanceManager.submitMessage(instanceId, text);
+    } else if (cmdType === 'setModel') {
+      const model = typeof body['model'] === 'string' ? body['model'] : '';
+      await this.instanceManager.setModel(instanceId, model);
+    } else if (cmdType === 'togglePlanMode') {
+      await this.instanceManager.togglePlanMode(instanceId);
+    } else if (cmdType === 'toggleYolo') {
+      const yolo = typeof body['yolo'] === 'boolean' ? body['yolo'] : undefined;
+      if (yolo === undefined) {
+        throw new Error('Missing yolo parameter');
       }
-      session.activeInstanceId = instanceId || null;
+      await this.instanceManager.toggleYolo(instanceId, yolo);
       this._persistState();
-      logCommand(sessionId, body, { status: 200, ok: true });
-      sendJson(res, 200, { ok: true });
-      return;
+    } else if (cmdType === 'confirm') {
+      const callId = typeof body['callId'] === 'string' ? body['callId'] : '';
+      const outcome = typeof body['outcome'] === 'string' ? body['outcome'] : '';
+      const correlationId =
+        typeof body['correlationId'] === 'string'
+          ? body['correlationId']
+          : undefined;
+      await this.instanceManager.confirm(instanceId, callId, outcome, correlationId);
     }
 
-    // --- interrupt ---
-    if (cmdType === 'interrupt') {
-      const instanceId =
-        typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
-      if (!instanceId) {
-        sendJson(res, 400, { error: 'Missing instanceId' });
-        return;
-      }
-      const inst = this.instances.get(instanceId);
-      if (!inst || inst.sessionId !== sessionId) {
-        sendJson(res, 403, { error: 'Instance not found in session' });
-        return;
-      }
-      log('interrupt instance', { instanceId, provider: inst.providerName });
-      try {
-        await inst.provider.interrupt();
-        logCommand(sessionId, body, {
-          status: 200,
-          ok: true,
-          provider: inst.providerName,
-        });
-        sendJson(res, 200, { ok: true });
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        log('interrupt error', msg);
-        // For Gemini: if process not running, return 409
-        if (
-          inst.providerName === 'gemini' &&
-          msg === 'CLI process not running'
-        ) {
-          sendJson(res, 409, { error: 'CLI process not running' });
-        } else if (
-          inst.providerName === 'gemini' &&
-          msg === 'CLI not connected'
-        ) {
-          this._sendToSession(sessionId, {
-            type: 'bridge:cli-status',
-            connected: false,
-            instanceId,
-            status: 'disconnected' as const,
-          });
-          this._sendInstanceList(sessionId);
-          sendJson(res, 409, { error: 'CLI not connected' });
-        } else {
-          logCommand(sessionId, body, {
-            status: 500,
-            error: 'Failed to interrupt',
-            provider: inst.providerName,
-          });
-          sendJson(res, 500, { error: 'Failed to interrupt' });
-        }
-      }
-      return;
-    }
-
-    // --- submit / confirm / setModel / togglePlanMode ---
-    if (
-      cmdType === 'submit' ||
-      cmdType === 'confirm' ||
-      cmdType === 'setModel' ||
-      cmdType === 'togglePlanMode'
-    ) {
-      const instanceId =
-        typeof body['instanceId'] === 'string' ? body['instanceId'] : '';
-      if (!instanceId) {
-        sendJson(res, 400, { error: 'Missing instanceId' });
-        return;
-      }
-      const inst = this.instances.get(instanceId);
-      if (!inst || inst.sessionId !== sessionId) {
-        sendJson(res, 403, { error: 'Instance not found in session' });
-        return;
-      }
-
-      try {
-        if (cmdType === 'submit') {
-          const text = typeof body['text'] === 'string' ? body['text'] : '';
-          log('submit', {
-            instanceId,
-            textLen: text.length,
-            provider: inst.providerName,
-          });
-          await inst.provider.submitMessage(text);
-        } else if (cmdType === 'setModel') {
-          const model = typeof body['model'] === 'string' ? body['model'] : '';
-          log('setModel', { instanceId, model, provider: inst.providerName });
-          await inst.provider.setModel(model);
-        } else if (cmdType === 'togglePlanMode') {
-          log('togglePlanMode', { instanceId, provider: inst.providerName });
-          if (inst.providerName === 'claude' && 'togglePlanMode' in inst.provider) {
-            await (inst.provider as any).togglePlanMode();
-          } else {
-            throw new Error('togglePlanMode only supported for Claude instances');
-          }
-        } else if (cmdType === 'confirm') {
-          const callId =
-            typeof body['callId'] === 'string' ? body['callId'] : '';
-          const outcome =
-            typeof body['outcome'] === 'string' ? body['outcome'] : '';
-          const correlationId =
-            typeof body['correlationId'] === 'string'
-              ? body['correlationId']
-              : undefined;
-          log('confirm', { instanceId, callId, provider: inst.providerName });
-          await inst.provider.confirm(callId, outcome, correlationId);
-        }
-        logCommand(sessionId, body, {
-          status: 200,
-          ok: true,
-          provider: inst.providerName,
-        });
-        sendJson(res, 200, { ok: true });
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        // Gemini: CLI not connected → 409
-        if (inst.providerName === 'gemini' && msg === 'CLI not connected') {
-          this._sendToSession(sessionId, {
-            type: 'bridge:cli-status',
-            connected: false,
-            instanceId,
-            status: 'disconnected' as const,
-          });
-          this._sendInstanceList(sessionId);
-          logCommand(sessionId, body, {
-            status: 409,
-            error: 'CLI not connected',
-            provider: 'gemini',
-          });
-          sendJson(res, 409, { error: 'CLI not connected' });
-        } else {
-          log('command error:', msg);
-          logCommand(sessionId, body, {
-            status: 500,
-            error: msg,
-            provider: inst.providerName,
-          });
-          sendJson(res, 500, { error: msg });
-        }
-      }
-      return;
-    }
-
-    sendJson(res, 400, { error: 'Unsupported command' });
+    logCommand(sessionId, body, { status: 200, ok: true });
+    sendJson(res, 200, { ok: true });
   }
 }

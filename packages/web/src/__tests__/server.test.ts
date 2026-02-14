@@ -4,7 +4,6 @@ import {
   post,
   get,
   collectSseEvents,
-  MockCliClient,
 } from './helpers.js';
 import type { TestServer } from './helpers.js';
 
@@ -50,6 +49,8 @@ describe('Health & Sessions', () => {
     expect(events[0]!.type).toBe('session_state');
     const state = events[0] as Record<string, unknown>;
     expect(state['sessionId']).toBe(sessionId);
+    // Instances is an array of {id, projectPath, yolo} objects
+    expect(Array.isArray(state['instances'])).toBe(true);
     expect(state['instances']).toEqual([]);
   });
 
@@ -139,174 +140,6 @@ describe('Command Validation', () => {
   });
 });
 
-describe('Gemini Provider (mock CLI)', () => {
-  let sessionId: string;
-  let instanceId: string;
-  let mockCli: MockCliClient;
-
-  beforeAll(async () => {
-    const r = await post(t.baseUrl, '/api/session', {});
-    sessionId = r.json?.['sessionId'] as string;
-  });
-
-  afterAll(() => {
-    mockCli?.close();
-  });
-
-  it('spawnInstance with provider=gemini returns instanceId', async () => {
-    const r = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'spawnInstance',
-      projectPath: '/tmp',
-      provider: 'gemini',
-    });
-    expect(r.status).toBe(200);
-    expect(r.json?.['instanceId']).toBeDefined();
-    instanceId = r.json?.['instanceId'] as string;
-    expect(r.json?.['resolvedPath']).toBeDefined();
-  });
-
-  it('mock CLI connects via WS and sends bridge:update → status becomes connected', async () => {
-    // Give the server a moment to register the instance
-    await new Promise((r) => setTimeout(r, 100));
-
-    mockCli = new MockCliClient();
-    await mockCli.connect(t.port, instanceId, '/tmp');
-    await mockCli.ready();
-
-    // Wait a bit for the bridge:update to propagate
-    await new Promise((r) => setTimeout(r, 200));
-
-    // Check via SSE that instance is connected
-    const events = await collectSseEvents(t.baseUrl, sessionId, 500);
-    const sessionState = events.find((e) => e.type === 'session_state') as
-      | Record<string, unknown>
-      | undefined;
-    const instances = sessionState?.['instances'] as
-      | Array<Record<string, unknown>>
-      | undefined;
-    const inst = instances?.find((i) => i['id'] === instanceId);
-    expect(inst?.['status']).toBe('connected');
-    expect(inst?.['provider']).toBe('gemini');
-  });
-
-  it('submit is forwarded via WS', async () => {
-    const received: Record<string, unknown>[] = [];
-    mockCli.onMessage((msg) => received.push(msg));
-
-    const r = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'submit',
-      instanceId,
-      text: 'hello world',
-    });
-    expect(r.status).toBe(200);
-    expect(r.json?.['ok']).toBe(true);
-
-    // Wait for WS message
-    await new Promise((r) => setTimeout(r, 100));
-    const submit = received.find((m) => m['type'] === 'submit');
-    expect(submit).toBeDefined();
-    expect(submit?.['text']).toBe('hello world');
-  });
-
-  it('setModel is forwarded via WS', async () => {
-    const received: Record<string, unknown>[] = [];
-    mockCli.onMessage((msg) => received.push(msg));
-
-    const r = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'setModel',
-      instanceId,
-      model: 'gemini-2.0-flash',
-    });
-    expect(r.status).toBe(200);
-
-    await new Promise((r) => setTimeout(r, 100));
-    const setModel = received.find((m) => m['type'] === 'setModel');
-    expect(setModel).toBeDefined();
-    expect(setModel?.['model']).toBe('gemini-2.0-flash');
-  });
-
-  it('confirm is forwarded via WS', async () => {
-    const received: Record<string, unknown>[] = [];
-    mockCli.onMessage((msg) => received.push(msg));
-
-    const r = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'confirm',
-      instanceId,
-      callId: 'call-123',
-      outcome: 'proceed_once',
-    });
-    expect(r.status).toBe(200);
-
-    await new Promise((r) => setTimeout(r, 100));
-    const confirm = received.find((m) => m['type'] === 'confirm');
-    expect(confirm).toBeDefined();
-    expect(confirm?.['callId']).toBe('call-123');
-  });
-
-  it('bridge:update from CLI arrives via SSE', async () => {
-    // Send a bridge:update with history
-    mockCli.sendUpdate(
-      instanceId,
-      '/tmp',
-      'responding',
-      [
-        { type: 'user', text: 'hello' },
-        { type: 'gemini', text: 'world' },
-      ],
-      [],
-    );
-
-    await new Promise((r) => setTimeout(r, 200));
-
-    const events = await collectSseEvents(t.baseUrl, sessionId, 500);
-    // session_state snapshot should contain the update
-    const state = events.find((e) => e.type === 'session_state') as
-      | Record<string, unknown>
-      | undefined;
-    const snapshots = state?.['snapshots'] as
-      | Array<Record<string, unknown>>
-      | undefined;
-    const snap = snapshots?.find((s) => s['instanceId'] === instanceId);
-    expect(snap).toBeDefined();
-    // The snapshot should have the history we sent
-    const history = snap?.['history'] as
-      | Array<Record<string, unknown>>
-      | undefined;
-    expect(history?.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('setActiveInstance works', async () => {
-    const r = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'setActiveInstance',
-      instanceId,
-    });
-    expect(r.status).toBe(200);
-    expect(r.json?.['ok']).toBe(true);
-  });
-
-  it('terminateInstance removes the instance', async () => {
-    const r = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'terminateInstance',
-      instanceId,
-    });
-    expect(r.status).toBe(200);
-    expect(r.json?.['ok']).toBe(true);
-
-    await new Promise((r) => setTimeout(r, 200));
-
-    // Verify it's gone
-    const events = await collectSseEvents(t.baseUrl, sessionId, 500);
-    const state = events.find((e) => e.type === 'session_state') as
-      | Record<string, unknown>
-      | undefined;
-    const instances = state?.['instances'] as
-      | Array<Record<string, unknown>>
-      | undefined;
-    const inst = instances?.find((i) => i['id'] === instanceId);
-    expect(inst).toBeUndefined();
-  });
-});
-
 describe('Cross-session isolation', () => {
   it('cannot access instance from another session', async () => {
     // Create two sessions
@@ -315,11 +148,11 @@ describe('Cross-session isolation', () => {
     const r2 = await post(t.baseUrl, '/api/session', {});
     const session2 = r2.json?.['sessionId'] as string;
 
-    // Spawn in session1
+    // Spawn in session1 (Claude is the only provider now)
     const spawn = await post(t.baseUrl, `/api/session/${session1}/command`, {
       type: 'spawnInstance',
       projectPath: '/tmp',
-      provider: 'gemini',
+      provider: 'claude',
     });
     const instanceId = spawn.json?.['instanceId'] as string;
 
@@ -329,5 +162,164 @@ describe('Cross-session isolation', () => {
       instanceId,
     });
     expect(r.status).toBe(403);
+  });
+});
+
+describe('Claude Provider', () => {
+  it('spawning Claude instance returns instanceId', async () => {
+    // Create session
+    const r = await post(t.baseUrl, '/api/session', {});
+    const sessionId = r.json?.['sessionId'] as string;
+
+    // Spawn Claude instance
+    const spawn = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
+      type: 'spawnInstance',
+      projectPath: '/tmp',
+      provider: 'claude',
+    });
+    expect(spawn.status).toBe(200);
+    const instanceId = spawn.json?.['instanceId'] as string;
+    expect(instanceId).toBeDefined();
+    expect(typeof spawn.json?.['resolvedPath']).toBe('string');
+
+    // Verify instance appears in a new SSE connection's session_state
+    // (This tests that the server state is properly updated)
+    const events = await collectSseEvents(t.baseUrl, sessionId, 500);
+    const sessionState = events.find((e) => e.type === 'session_state') as
+      | Record<string, unknown>
+      | undefined;
+    expect(sessionState).toBeDefined();
+    expect(sessionState?.['sessionId']).toBe(sessionId);
+
+    const instances = sessionState?.['instances'] as Array<Record<string, unknown>> | undefined;
+    expect(Array.isArray(instances)).toBe(true);
+    expect(instances?.some((i) => i['id'] === instanceId)).toBe(true);
+  });
+
+  it('Claude instance emits models_available event', async () => {
+    // Create session and connect SSE
+    const r = await post(t.baseUrl, '/api/session', {});
+    const sessionId = r.json?.['sessionId'] as string;
+
+    // Collect SSE events in the background
+    const eventsPromise = collectSseEvents(t.baseUrl, sessionId, 3000);
+
+    // Wait for initial session_state
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Spawn Claude instance
+    const spawn = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
+      type: 'spawnInstance',
+      projectPath: '/tmp',
+      provider: 'claude',
+    });
+    const instanceId = spawn.json?.['instanceId'] as string;
+
+    // Wait for events
+    const events = await eventsPromise;
+
+    // Find claude:models_available event for this instance
+    const modelsEvent = events.find(
+      (e) =>
+        e.type === 'claude:models_available' &&
+        (e as Record<string, unknown>)['instanceId'] === instanceId,
+    ) as Record<string, unknown> | undefined;
+
+    // Models should be fetched within 3 seconds
+    expect(modelsEvent).toBeDefined();
+    const models = modelsEvent?.['models'] as Array<Record<string, unknown>> | undefined;
+    expect(Array.isArray(models)).toBe(true);
+    expect(models!.length).toBeGreaterThan(0);
+    expect(models![0]).toHaveProperty('value');
+    expect(models![0]).toHaveProperty('label');
+  });
+
+  it('Claude instance handles submit command and emits events', async () => {
+    // Create session
+    const r = await post(t.baseUrl, '/api/session', {});
+    const sessionId = r.json?.['sessionId'] as string;
+
+    // Spawn instance
+    const spawn = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
+      type: 'spawnInstance',
+      projectPath: '/tmp',
+      provider: 'claude',
+    });
+    const instanceId = spawn.json?.['instanceId'] as string;
+
+    // Wait for initialization
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    // Start collecting events
+    const eventsPromise = collectSseEvents(t.baseUrl, sessionId, 5000);
+
+    // Submit a message
+    const submit = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
+      type: 'submit',
+      instanceId,
+      text: 'say hello',
+    });
+    expect(submit.status).toBe(200);
+
+    // Wait for response
+    const events = await eventsPromise;
+
+    // Should get streaming_state event
+    const stateEvents = events.filter(
+      (e) =>
+        e.type === 'claude:streaming_state' &&
+        (e as Record<string, unknown>)['instanceId'] === instanceId,
+    );
+    expect(stateEvents.length).toBeGreaterThan(0);
+
+    // Should get text_delta events
+    const textDeltas = events.filter(
+      (e) =>
+        e.type === 'claude:text_delta' &&
+        (e as Record<string, unknown>)['instanceId'] === instanceId,
+    );
+    expect(textDeltas.length).toBeGreaterThan(0);
+
+    // Should get text_complete event
+    const textComplete = events.find(
+      (e) =>
+        e.type === 'claude:text_complete' &&
+        (e as Record<string, unknown>)['instanceId'] === instanceId,
+    );
+    expect(textComplete).toBeDefined();
+  });
+
+  it('terminateInstance removes the instance from session', async () => {
+    // Create session and spawn instance
+    const r = await post(t.baseUrl, '/api/session', {});
+    const sessionId = r.json?.['sessionId'] as string;
+
+    const spawn = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
+      type: 'spawnInstance',
+      projectPath: '/tmp',
+      provider: 'claude',
+    });
+    const instanceId = spawn.json?.['instanceId'] as string;
+
+    // Wait for initialization
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    // Terminate the instance
+    const terminate = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
+      type: 'terminateInstance',
+      instanceId,
+    });
+    expect(terminate.status).toBe(200);
+
+    // Wait for state update
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    // Verify it's gone from session_state
+    const events = await collectSseEvents(t.baseUrl, sessionId, 500);
+    const state = events.find((e) => e.type === 'session_state') as
+      | Record<string, unknown>
+      | undefined;
+    const instances = state?.['instances'] as Array<Record<string, unknown>> | undefined;
+    expect(instances?.some((i) => i['id'] === instanceId)).not.toBe(true);
   });
 });

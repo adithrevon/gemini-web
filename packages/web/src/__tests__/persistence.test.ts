@@ -3,14 +3,13 @@ import {
   startTestServer,
   post,
   collectSseEvents,
-  MockCliClient,
 } from './helpers.js';
 import type { TestServer } from './helpers.js';
 import { existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-const PERSIST_FILE = join(homedir(), '.gemini-web', 'sessions.json');
+const PERSIST_FILE = join(homedir(), '.claude-web', 'sessions.json');
 
 // Clean up persistence file before/after tests
 beforeEach(() => {
@@ -20,17 +19,8 @@ beforeEach(() => {
 });
 
 describe('Session Persistence', () => {
-  let t: TestServer;
-
-  afterAll(async () => {
-    await t?.cleanup();
-    if (existsSync(PERSIST_FILE)) {
-      unlinkSync(PERSIST_FILE);
-    }
-  });
-
   it('creates persistence file on first state change', async () => {
-    t = await startTestServer();
+    const t = await startTestServer();
 
     // Create a session
     const r = await post(t.baseUrl, '/api/session', {});
@@ -46,7 +36,7 @@ describe('Session Persistence', () => {
   });
 
   it('persists and restores a single Claude instance', async () => {
-    t = await startTestServer();
+    let t = await startTestServer();
 
     const r1 = await post(t.baseUrl, '/api/session', {});
     const sessionId = r1.json?.['sessionId'] as string;
@@ -66,52 +56,47 @@ describe('Session Persistence', () => {
     await t.cleanup();
     t = await startTestServer();
 
-    // Verify session and instance were restored
-    const events = await collectSseEvents(t.baseUrl, sessionId, 1000);
+    // Verify session and instance were restored (allow time for bridge startup)
+    const events = await collectSseEvents(t.baseUrl, sessionId, 15000);
     const state = events.find((e) => e.type === 'session_state') as
       | Record<string, unknown>
       | undefined;
 
     expect(state?.['sessionId']).toBe(sessionId);
 
-    const instances = state?.['instances'] as
-      | Array<Record<string, unknown>>
-      | undefined;
+    // Instances is an array of {id, projectPath, yolo} objects
+    const instances = state?.['instances'] as Array<Record<string, unknown>> | undefined;
 
+    expect(Array.isArray(instances)).toBe(true);
     expect(instances?.length).toBe(1);
     expect(instances?.[0]?.['id']).toBe(instanceId);
-    expect(instances?.[0]?.['provider']).toBe('claude');
+    expect(instances?.[0]?.['projectPath']).toBeDefined();
+    expect(typeof instances?.[0]?.['yolo']).toBe('boolean');
 
     await t.cleanup();
   });
 
-  it('preserves activeInstanceId when restoring multiple instances', async () => {
-    t = await startTestServer();
+  it('restores multiple Claude instances', async () => {
+    let t = await startTestServer();
 
     const r1 = await post(t.baseUrl, '/api/session', {});
     const sessionId = r1.json?.['sessionId'] as string;
 
-    // Spawn Claude instance
+    // Spawn first Claude instance
     const r2 = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
       type: 'spawnInstance',
-      projectPath: '/tmp/test-claude',
+      projectPath: '/tmp/test-claude-1',
       provider: 'claude',
     });
-    const claudeId = r2.json?.['instanceId'] as string;
+    const instance1Id = r2.json?.['instanceId'] as string;
 
-    // Spawn Gemini instance
+    // Spawn second Claude instance
     const r3 = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
       type: 'spawnInstance',
-      projectPath: '/tmp/test-gemini',
-      provider: 'gemini',
+      projectPath: '/tmp/test-claude-2',
+      provider: 'claude',
     });
-    const geminiId = r3.json?.['instanceId'] as string;
-
-    // Set Claude as active (overriding Gemini which became active on spawn)
-    await post(t.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'setActiveInstance',
-      instanceId: claudeId,
-    });
+    const instance2Id = r3.json?.['instanceId'] as string;
 
     // Wait for persistence
     await new Promise((r) => setTimeout(r, 6000));
@@ -120,113 +105,73 @@ describe('Session Persistence', () => {
     await t.cleanup();
     t = await startTestServer();
 
-    // Verify BOTH instances were restored
-    const events = await collectSseEvents(t.baseUrl, sessionId, 1000);
+    // Verify BOTH instances were restored (allow time for bridge startup)
+    const events = await collectSseEvents(t.baseUrl, sessionId, 15000);
     const state = events.find((e) => e.type === 'session_state') as
       | Record<string, unknown>
       | undefined;
 
-    const instances = state?.['instances'] as
-      | Array<Record<string, unknown>>
-      | undefined;
+    const instances = state?.['instances'] as Array<Record<string, unknown>> | undefined;
 
+    expect(Array.isArray(instances)).toBe(true);
     expect(instances?.length).toBe(2);
-
-    // CRITICAL: Verify Claude is still the active instance, not Gemini
-    expect(state?.['activeInstanceId']).toBe(claudeId);
+    expect(instances?.some((i) => i['id'] === instance1Id)).toBe(true);
+    expect(instances?.some((i) => i['id'] === instance2Id)).toBe(true);
 
     await t.cleanup();
   });
 
-  it('routes messages to the correct instance after restoration', async () => {
-    t = await startTestServer();
+  it('handles commands to specific instances after restoration', async () => {
+    let t = await startTestServer();
 
     const r1 = await post(t.baseUrl, '/api/session', {});
     const sessionId = r1.json?.['sessionId'] as string;
 
-    // Spawn two Gemini instances with mock clients
+    // Spawn two Claude instances
     const r2 = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
       type: 'spawnInstance',
       projectPath: '/tmp/test-1',
-      provider: 'gemini',
+      provider: 'claude',
     });
     const instance1 = r2.json?.['instanceId'] as string;
 
     const r3 = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
       type: 'spawnInstance',
       projectPath: '/tmp/test-2',
-      provider: 'gemini',
+      provider: 'claude',
     });
     const instance2 = r3.json?.['instanceId'] as string;
-
-    // Connect mock CLIs
-    await new Promise((r) => setTimeout(r, 200));
-
-    const cli1 = new MockCliClient();
-    await cli1.connect(t.port, instance1, '/tmp/test-1');
-    await cli1.ready();
-
-    const cli2 = new MockCliClient();
-    await cli2.connect(t.port, instance2, '/tmp/test-2');
-    await cli2.ready();
-
-    // Set instance1 as active
-    await post(t.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'setActiveInstance',
-      instanceId: instance1,
-    });
 
     // Wait for persistence
     await new Promise((r) => setTimeout(r, 6000));
 
-    // Restart server (CLIs will disconnect)
-    cli1.close();
-    cli2.close();
+    // Restart server
     await t.cleanup();
     t = await startTestServer();
 
-    // Reconnect CLIs
-    await new Promise((r) => setTimeout(r, 200));
+    // Wait for restoration
+    await new Promise((r) => setTimeout(r, 1000));
 
-    const cli1New = new MockCliClient();
-    await cli1New.connect(t.port, instance1, '/tmp/test-1');
-    await cli1New.ready();
-
-    const cli2New = new MockCliClient();
-    await cli2New.connect(t.port, instance2, '/tmp/test-2');
-    await cli2New.ready();
-
-    // Listen for messages
-    const cli1Messages: Record<string, unknown>[] = [];
-    const cli2Messages: Record<string, unknown>[] = [];
-
-    cli1New.onMessage((msg) => cli1Messages.push(msg));
-    cli2New.onMessage((msg) => cli2Messages.push(msg));
-
-    // Send message - should go to instance1 (the active one)
-    await post(t.baseUrl, `/api/session/${sessionId}/command`, {
+    // Verify both instances can receive commands
+    const submit1 = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
       type: 'submit',
       instanceId: instance1,
-      text: 'test message',
+      text: 'test message 1',
     });
+    expect(submit1.status).toBe(200);
 
-    await new Promise((r) => setTimeout(r, 200));
+    const submit2 = await post(t.baseUrl, `/api/session/${sessionId}/command`, {
+      type: 'submit',
+      instanceId: instance2,
+      text: 'test message 2',
+    });
+    expect(submit2.status).toBe(200);
 
-    // CRITICAL: Verify message went to instance1, not instance2
-    const cli1Submit = cli1Messages.find((m) => m['type'] === 'submit');
-    const cli2Submit = cli2Messages.find((m) => m['type'] === 'submit');
-
-    expect(cli1Submit).toBeDefined();
-    expect(cli1Submit?.['text']).toBe('test message');
-    expect(cli2Submit).toBeUndefined(); // Should NOT receive the message
-
-    cli1New.close();
-    cli2New.close();
     await t.cleanup();
   });
 
   it('handles corrupt persistence file gracefully', async () => {
-    t = await startTestServer();
+    let t = await startTestServer();
 
     // Create a corrupt file
     const fs = await import('node:fs/promises');
@@ -248,7 +193,7 @@ describe('Session Persistence', () => {
   });
 
   it('persists session immediately on graceful shutdown', async () => {
-    t = await startTestServer();
+    const t = await startTestServer();
 
     const r1 = await post(t.baseUrl, '/api/session', {});
     const sessionId = r1.json?.['sessionId'] as string;

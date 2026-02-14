@@ -1,10 +1,5 @@
-import { WebSocket } from 'ws';
-
-import type { ServerConfig, BridgeUpdatePayload } from '../types.js';
+import type { ServerConfig } from '../types.js';
 import { GeminiWebServer } from '../server.js';
-import { setDebug } from '../logger.js';
-
-setDebug(false);
 
 export interface TestServer {
   baseUrl: string;
@@ -123,87 +118,3 @@ export async function collectSseEvents(
   return events;
 }
 
-/**
- * MockCliClient — simulates a Gemini CLI connecting via WebSocket.
- * Sends bridge:hello + bridge:update messages.
- */
-export class MockCliClient {
-  private ws: WebSocket | null = null;
-  private _ready: Promise<void>;
-  private _resolveReady!: () => void;
-
-  constructor() {
-    this._ready = new Promise((resolve) => {
-      this._resolveReady = resolve;
-    });
-  }
-
-  async connect(
-    port: number,
-    instanceId: string,
-    projectPath: string,
-  ): Promise<void> {
-    return new Promise((resolve, reject) => {
-      this.ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
-      this.ws.on('open', () => {
-        // Send hello
-        this.ws!.send(JSON.stringify({ type: 'bridge:hello', role: 'cli' }));
-        // Send initial bridge:update
-        this.sendUpdate(instanceId, projectPath, 'idle', [], []);
-        this._resolveReady();
-        resolve();
-      });
-      this.ws.on('error', reject);
-    });
-  }
-
-  sendUpdate(
-    instanceId: string,
-    projectPath: string,
-    streamingState: string,
-    history: unknown[],
-    pending: unknown[],
-  ): void {
-    if (!this.ws) return;
-    const payload: BridgeUpdatePayload = {
-      instanceId,
-      projectPath,
-      history: history as BridgeUpdatePayload['history'],
-      pending: pending as BridgeUpdatePayload['pending'],
-      streamingState: streamingState as BridgeUpdatePayload['streamingState'],
-      isTrustedFolder: true,
-      currentModel: 'gemini-2.0-flash',
-      availableModels: [
-        {
-          value: 'gemini-2.0-flash',
-          label: 'Gemini 2.0 Flash',
-          description: null,
-          isAuto: false,
-        },
-      ],
-      hasPreviewAccess: false,
-    };
-    this.ws.send(JSON.stringify({ type: 'bridge:update', payload }));
-  }
-
-  /** Wait for the connection to be ready. */
-  async ready(): Promise<void> {
-    return this._ready;
-  }
-
-  /** Get messages received by the CLI mock. */
-  onMessage(handler: (data: Record<string, unknown>) => void): void {
-    this.ws?.on('message', (raw: Buffer | string) => {
-      try {
-        handler(JSON.parse(raw.toString()) as Record<string, unknown>);
-      } catch {
-        /* ignore */
-      }
-    });
-  }
-
-  close(): void {
-    this.ws?.close();
-    this.ws = null;
-  }
-}

@@ -10,7 +10,6 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var pendingProjectPath: String?
     @State private var pendingInstanceId: String?
-    @State private var pendingProvider: Provider = .gemini
     @State private var pendingYolo: Bool = false
     @State private var pendingModel: String?
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
@@ -147,12 +146,11 @@ struct ContentView: View {
         NewChatView(
             recentProjects: recentProjects,
             initialProject: pendingProjectPath,
-            initialProvider: pendingProvider,
             composerDisabled: newChatDisabled,
             connected: store.connected,
             status: displayStatus,
-            onProjectSelected: { path, provider, yolo, model in
-                handleProjectSelected(path, provider: provider, yolo: yolo, model: model)
+            onProjectSelected: { path, yolo, model in
+                handleProjectSelected(path, yolo: yolo, model: model)
             },
             onSubmitMessage: { msg in
                 if let instanceId = pendingInstanceId {
@@ -222,7 +220,44 @@ struct ContentView: View {
     @ViewBuilder
     private func chatDetailView(instance: InstanceState) -> some View {
         VStack(spacing: 0) {
-            if !instance.history.isEmpty || !instance.pending.isEmpty {
+            if !store.connected {
+                // Offline view - similar to new chat
+                Spacer()
+
+                VStack(spacing: 24) {
+                    Image(systemName: "wifi.exclamationmark")
+                        .font(.system(size: 48))
+                        .foregroundStyle(Color.red.gradient)
+
+                    Text("Server Offline")
+                        .font(.title2.bold())
+
+                    VStack(spacing: 12) {
+                        Text("Cannot connect to backend server")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+
+                        Button(action: { showSettings = true }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "gear")
+                                    .font(.caption.weight(.medium))
+                                Text("Open Settings")
+                                    .font(.caption.weight(.medium))
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.accentColor)
+                            .foregroundColor(.white)
+                            .cornerRadius(8)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .frame(maxWidth: 260)
+                }
+
+                Spacer()
+            } else if !instance.history.isEmpty || !instance.pending.isEmpty {
                 MessageListView(
                     history: instance.history,
                     pending: instance.pending,
@@ -250,11 +285,25 @@ struct ContentView: View {
                         store.sendSetModel(model)
                     }
                 ),
-                provider: instance.provider,
                 planModeActive: instance.planModeActive,
                 onTogglePlanMode: {
                     store.togglePlanMode()
                 },
+                sudoToggle: SudoToggleConfig(
+                    isOn: Binding(
+                        get: { instance.yolo },
+                        set: { _ in }
+                    ),
+                    disabled: isDisabled || instance.streamingState != .idle,
+                    isTransitioning: Binding(
+                        get: { instance.isSudoTransitioning },
+                        set: { _ in }
+                    ),
+                    onChange: { newValue in
+                        store.toggleSudo(newValue)
+                    }
+                ),
+                alwaysExpanded: false,
                 onSubmit: { text in store.sendSubmit(text) },
                 onInterrupt: { store.sendInterrupt() }
             )
@@ -307,7 +356,7 @@ struct ContentView: View {
 
     // MARK: - Handlers
 
-    private func handleProjectSelected(_ projectPath: String, provider: Provider = .gemini, yolo: Bool = false, model: String? = nil) {
+    private func handleProjectSelected(_ projectPath: String, yolo: Bool = false, model: String? = nil) {
         if let oldId = pendingInstanceId,
            let oldInst = store.instances[oldId],
            oldInst.history.isEmpty {
@@ -317,13 +366,12 @@ struct ContentView: View {
 
         showNewChat = true
         pendingProjectPath = projectPath
-        pendingProvider = provider
         pendingYolo = yolo
         pendingModel = model
 
         Task {
-            let instanceId = await store.spawnInstance(projectPath: projectPath, provider: provider, yolo: yolo)
-            if pendingProjectPath == projectPath && pendingProvider == provider {
+            let instanceId = await store.spawnInstance(projectPath: projectPath, yolo: yolo)
+            if pendingProjectPath == projectPath {
                 pendingInstanceId = instanceId
             }
         }
@@ -337,7 +385,7 @@ struct ContentView: View {
             store.setActiveInstance(id)
         }
 
-        if let model = pendingModel, model != pendingProvider.defaultModel {
+        if let model = pendingModel, !model.isEmpty {
             store.sendSetModel(model)
         }
         pendingModel = nil
@@ -349,14 +397,12 @@ struct ContentView: View {
     private func handleNewChatFromProject(_ projectPath: String) {
         pendingInstanceId = nil
         pendingProjectPath = projectPath
-        pendingProvider = .gemini
         showNewChat = true
     }
 
     private func handleNewProject() {
         pendingProjectPath = nil
         pendingInstanceId = nil
-        pendingProvider = .gemini
         showNewChat = true
     }
 

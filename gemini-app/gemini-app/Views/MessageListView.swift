@@ -8,6 +8,8 @@ struct MessageListView: View {
     let isTrustedFolder: Bool
     let onConfirm: (String, ConfirmOutcome, String?) -> Void
 
+    @State private var hasAppeared = false
+
     private var allMessages: [Message] {
         history + pending
     }
@@ -85,15 +87,20 @@ struct MessageListView: View {
             .onTapGesture {
                 dismissKeyboard()
             }
-            .onChange(of: allMessages.count) { _, _ in
-                withAnimation(AppAnimation.spring) {
+            .onAppear {
+                // Scroll to bottom immediately when view appears (no animation)
+                if !hasAppeared {
+                    hasAppeared = true
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
             }
+            .onChange(of: allMessages.count) { _, _ in
+                // Scroll without animation to prevent jarring bounce
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
             .onChange(of: streamingState) { _, _ in
-                withAnimation(AppAnimation.spring) {
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
+                // Scroll without animation to prevent jarring bounce
+                proxy.scrollTo("bottom", anchor: .bottom)
             }
         }
     }

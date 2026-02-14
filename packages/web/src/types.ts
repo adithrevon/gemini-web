@@ -1,19 +1,12 @@
 // ---------------------------------------------------------------------------
-// Shared types for gemini-web server
+// Shared types for claude-web server
 // All SSE event shapes and command payloads must match the iOS app contract.
 // ---------------------------------------------------------------------------
 
 // --- Provider ---
+// Claude-only now (Gemini removed)
 
-export type ProviderName = 'gemini' | 'claude';
-
-// --- Instance & Session status ---
-
-export type InstanceStatus =
-  | 'connecting'
-  | 'connected'
-  | 'disconnected'
-  | 'error';
+// --- Streaming state ---
 
 export type StreamingState =
   | 'idle'
@@ -124,7 +117,8 @@ export interface TodoList {
 }
 
 // --- Bridge update payload (sent via SSE) ---
-
+// DEPRECATED: Will be removed in favor of event-based architecture
+// Kept temporarily for backward compatibility during migration
 export interface BridgeUpdatePayload {
   instanceId: string;
   sessionId?: string; // Gemini session ID from CLI (for resume)
@@ -141,32 +135,76 @@ export interface BridgeUpdatePayload {
   planModeActive?: boolean; // Claude-specific
 }
 
+// --- Claude Event Types (Event-Based Architecture) ---
+
+export interface ToolInfo {
+  callId: string;
+  name: string;
+  input: Record<string, unknown>;
+  description: string;
+}
+
+export type ClaudeEvent =
+  | { type: 'claude:text_delta'; instanceId: string; text: string; seq: number }
+  | { type: 'claude:text_complete'; instanceId: string; text: string; seq: number }
+  | {
+      type: 'claude:tool_added';
+      instanceId: string;
+      tool: ToolInfo;
+      confirmationDetails?: ConfirmationDetails;
+      seq: number;
+    }
+  | {
+      type: 'claude:tool_status';
+      instanceId: string;
+      toolId: string;
+      status: string;
+      seq: number;
+    }
+  | {
+      type: 'claude:tool_result';
+      instanceId: string;
+      toolId: string;
+      result: any;
+      seq: number;
+    }
+  | {
+      type: 'claude:streaming_state';
+      instanceId: string;
+      state: StreamingState;
+      seq: number;
+    }
+  | {
+      type: 'claude:models_available';
+      instanceId: string;
+      models: ModelOption[];
+      seq: number;
+    }
+  | {
+      type: 'claude:session_complete';
+      instanceId: string;
+      sessionId: string;
+      seq: number;
+    };
+
+// Special server events
+export interface ServerRestartedEvent {
+  type: 'server:restarted';
+  message: string;
+  seq: number;
+}
+
 // --- SSE event types ---
 
 export interface SessionStateEvent {
   type: 'session_state';
   sessionId: string;
-  activeInstanceId: string | null;
-  instances: SessionInstanceInfo[];
-  snapshots: BridgeUpdatePayload[];
+  instances: string[]; // Just instance IDs
 }
 
 export interface BridgeUpdateEvent {
   type: 'bridge:update';
   payload: BridgeUpdatePayload;
-}
-
-export interface BridgeCliStatusEvent {
-  type: 'bridge:cli-status';
-  connected: boolean;
-  instanceId: string;
-  status: InstanceStatus;
-  error?: string | null;
-}
-
-export interface BridgeInstanceListEvent {
-  type: 'bridge:instance-list';
-  instances: SessionInstanceInfo[];
 }
 
 export interface BridgeErrorEvent {
@@ -178,36 +216,22 @@ export interface BridgeErrorEvent {
 export type SseEvent =
   | SessionStateEvent
   | BridgeUpdateEvent
-  | BridgeCliStatusEvent
-  | BridgeInstanceListEvent
-  | BridgeErrorEvent;
+  | BridgeErrorEvent
+  | ClaudeEvent
+  | ServerRestartedEvent;
 
 // --- Session & instance info ---
-
-export interface SessionInstanceInfo {
-  id: string;
-  projectPath: string;
-  connected: boolean;
-  status: InstanceStatus;
-  error: string | null;
-  provider: ProviderName;
-}
+// Simplified: iOS maintains detailed state, server just tracks IDs
 
 // --- Command payloads (from iOS app) ---
 
 export interface SpawnInstanceCommand {
   type: 'spawnInstance';
   projectPath: string;
-  provider?: string;
 }
 
 export interface TerminateInstanceCommand {
   type: 'terminateInstance';
-  instanceId: string;
-}
-
-export interface SetActiveInstanceCommand {
-  type: 'setActiveInstance';
   instanceId: string;
 }
 
@@ -239,7 +263,6 @@ export interface SetModelCommand {
 export type Command =
   | SpawnInstanceCommand
   | TerminateInstanceCommand
-  | SetActiveInstanceCommand
   | InterruptCommand
   | SubmitCommand
   | ConfirmCommand
@@ -298,23 +321,14 @@ export interface PathValidation {
 
 export interface PersistedInstance {
   id: string;
-  sessionId: string | null;
-  provider: ProviderName;
-  providerName: ProviderName;
+  sessionId: string; // Which client owns this instance
   projectPath: string;
-  status: InstanceStatus;
-  error: string | null;
-  lastSnapshot: BridgeUpdatePayload | null;
-
-  // Provider-specific resume data
+  yolo: boolean; // Sudo/bypass permissions mode
   claudeSessionId?: string; // For Claude SDK resume
-  geminiSessionId?: string; // For Gemini CLI --resume
 }
 
 export interface PersistedSession {
   id: string;
-  activeInstanceId: string | null;
-  lastSeenAt: number;
   instances: PersistedInstance[];
 }
 

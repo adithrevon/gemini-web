@@ -1,7 +1,9 @@
 import { writeFile, rename, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import type { PersistedData } from './types.js';
-import { log } from './logger.js';
+import { createLogger } from './logger.js';
+
+const log = createLogger('persistence');
 
 export class SessionPersistence {
   private filePath: string;
@@ -19,7 +21,7 @@ export class SessionPersistence {
    */
   async load(): Promise<PersistedData> {
     if (!existsSync(this.filePath)) {
-      log('persistence: no existing file found, starting fresh');
+      log.debug('persistence: no existing file found, starting fresh');
       return {
         version: 1,
         lastUpdated: new Date().toISOString(),
@@ -36,7 +38,7 @@ export class SessionPersistence {
         throw new Error('Invalid data structure');
       }
 
-      log('persistence: loaded data', {
+      log.debug('persistence: loaded data', {
         version: data.version,
         sessions: data.sessions.length,
         lastUpdated: data.lastUpdated,
@@ -45,13 +47,13 @@ export class SessionPersistence {
       return data;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log('persistence: failed to load, marking as corrupt', { error: msg });
+      log.debug('persistence: failed to load, marking as corrupt', { error: msg });
 
       // Rename corrupt file
       const corruptPath = `${this.filePath}.corrupt.${Date.now()}`;
       try {
         await rename(this.filePath, corruptPath);
-        log('persistence: renamed corrupt file', { to: corruptPath });
+        log.debug('persistence: renamed corrupt file', { to: corruptPath });
       } catch {
         // Ignore rename errors
       }
@@ -83,7 +85,7 @@ export class SessionPersistence {
         this.pendingData = null;
         void this.writeNow(toWrite).catch((err) => {
           const msg = err instanceof Error ? err.message : String(err);
-          log('persistence: scheduled write failed', { error: msg });
+          log.debug('persistence: scheduled write failed', { error: msg });
         });
       }
     }, this.writeDebounceMs);
@@ -114,7 +116,7 @@ export class SessionPersistence {
       // Atomic rename: move temp to main
       await rename(tmpPath, this.filePath);
 
-      log('persistence: write complete', {
+      log.debug('persistence: write complete', {
         sessions: data.sessions.length,
         instances: data.sessions.reduce(
           (sum, s) => sum + s.instances.length,
@@ -123,7 +125,7 @@ export class SessionPersistence {
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      log('persistence: write failed', { error: msg });
+      log.debug('persistence: write failed', { error: msg });
       throw err;
     }
   }

@@ -368,7 +368,7 @@ final class SessionService: NSObject {
         }
     }
 
-    func spawnInstance(projectPath: String, provider: Provider = .gemini, yolo: Bool = false) async throws -> (instanceId: String, resolvedPath: String) {
+    func spawnInstance(projectPath: String, yolo: Bool = false) async throws -> (instanceId: String, resolvedPath: String) {
         guard let sessionId = sessionId else {
             throw SessionError.noSession
         }
@@ -376,7 +376,7 @@ final class SessionService: NSObject {
         var request = URLRequest(url: baseURL.appendingPathComponent("/api/session/\(sessionId)/command"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONEncoder().encode(OutgoingMessage.spawnInstance(projectPath: projectPath, provider: provider, yolo: yolo))
+        request.httpBody = try JSONEncoder().encode(OutgoingMessage.spawnInstance(projectPath: projectPath, yolo: yolo))
 
         let (data, response) = try await URLSession.shared.data(for: request)
 
@@ -406,6 +406,10 @@ final class SessionService: NSObject {
 
     func togglePlanMode(instanceId: String) async throws {
         try await sendCommand(.togglePlanMode(instanceId: instanceId))
+    }
+
+    func toggleYolo(_ yolo: Bool, instanceId: String) async throws {
+        try await sendCommand(.toggleYolo(instanceId: instanceId, yolo: yolo))
     }
 
     func terminateInstance(_ instanceId: String) async throws {

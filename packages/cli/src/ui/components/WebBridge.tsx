@@ -317,7 +317,9 @@ const convertSessionMetricsToUsageMetrics = (
     }
   > = {};
 
-  for (const [modelName, modelMetrics] of Object.entries(metrics.models || {})) {
+  for (const [modelName, modelMetrics] of Object.entries(
+    metrics.models || {},
+  )) {
     totalApiCalls += modelMetrics.api?.totalRequests || 0;
     totalApiErrors += modelMetrics.api?.totalErrors || 0;
     totalApiLatencyMs += modelMetrics.api?.totalLatencyMs || 0;
@@ -372,10 +374,7 @@ const extractTodosFromHistory = (
         ) {
           return {
             items: resultDisplay.todos.map(
-              (
-                todo: { description: string; status: string },
-                idx: number,
-              ) => ({
+              (todo: { description: string; status: string }, idx: number) => ({
                 id: `todo-${Date.now()}-${idx}`,
                 status: todo.status || 'pending',
                 description: todo.description || '',

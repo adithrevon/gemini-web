@@ -4,6 +4,23 @@ import os.log
 
 private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "gemini-app", category: "SessionStore")
 
+// MARK: - Persistence Types
+
+struct PersistedInstanceState: Codable {
+    let id: String
+    let projectPath: String
+    let history: [Message]
+    let currentModel: String
+    let yolo: Bool
+    let planModeActive: Bool
+}
+
+struct PersistedAppState: Codable {
+    let version: Int
+    let activeInstanceId: String?
+    let instances: [PersistedInstanceState]
+}
+
 /// Observable state store for session and instance management
 @MainActor
 @Observable
@@ -34,12 +51,15 @@ final class SessionStore: SessionServiceDelegate {
     private var inAppNotificationManager: InAppNotificationManager?
     private var disconnectTask: Task<Void, Never>?
     private let disconnectGracePeriod: TimeInterval = 3.0
+    private var persistTask: Task<Void, Never>?
+    private let persistDebounceInterval: TimeInterval = 1.0
     
     // MARK: - Initialization
     
     init() {
         service.delegate = self
         recentProjects = service.loadRecentProjects()
+        restoreFromDisk()
         setupNotificationObservers()
     }
 
@@ -51,7 +71,8 @@ final class SessionStore: SessionServiceDelegate {
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.appIsInBackground = true
-                logger.info("SessionStore: app moved to background")
+                self?.saveToDiskNow()
+                logger.info("SessionStore: app moved to background, state saved")
             }
         }
 
@@ -103,11 +124,11 @@ final class SessionStore: SessionServiceDelegate {
     
     // MARK: - Instance Management
     
-    func spawnInstance(projectPath: String, provider: Provider = .gemini, yolo: Bool = false) async -> String? {
+    func spawnInstance(projectPath: String, yolo: Bool = false) async -> String? {
         guard !projectPath.isEmpty else { return nil }
 
         do {
-            let (instanceId, resolvedPath) = try await service.spawnInstance(projectPath: projectPath, provider: provider, yolo: yolo)
+            let (instanceId, resolvedPath) = try await service.spawnInstance(projectPath: projectPath, yolo: yolo)
 
             // Create local instance state immediately
             instances[instanceId] = InstanceState(
@@ -118,13 +139,15 @@ final class SessionStore: SessionServiceDelegate {
                 pending: [],
                 streamingState: .idle,
                 isTrustedFolder: false,
-                currentModel: provider.defaultModel,
+                currentModel: "",
                 availableModels: [],
                 error: nil,
-                provider: provider
+                yolo: yolo,
+                isSudoTransitioning: false
             )
 
             activeInstanceId = instanceId
+            scheduleSaveToDisk()
             return instanceId
         } catch {
             return nil
@@ -133,15 +156,16 @@ final class SessionStore: SessionServiceDelegate {
     
     func terminateInstance(_ instanceId: String) {
         guard !instanceId.isEmpty else { return }
-        
+
         Task {
             try? await service.terminateInstance(instanceId)
         }
-        
+
         instances.removeValue(forKey: instanceId)
         if activeInstanceId == instanceId {
             activeInstanceId = nil
         }
+        scheduleSaveToDisk()
     }
     
     func setActiveInstance(_ instanceId: String?) {
@@ -175,7 +199,15 @@ final class SessionStore: SessionServiceDelegate {
     
     func sendSubmit(_ text: String) {
         guard let instanceId = activeInstanceId else { return }
-        
+
+        // Add user message to history immediately (server won't echo it back)
+        if var instance = instances[instanceId] {
+            instance.history.append(.user(text))
+            instances[instanceId] = instance
+        }
+
+        scheduleSaveToDisk()
+
         Task {
             try? await service.submit(text: text, instanceId: instanceId)
         }
@@ -220,6 +252,37 @@ final class SessionStore: SessionServiceDelegate {
         }
     }
 
+    func toggleSudo(_ newValue: Bool) {
+        guard let instanceId = activeInstanceId,
+              var instance = instances[instanceId] else { return }
+
+        // Set transitioning state
+        instance.isSudoTransitioning = true
+        instance.yolo = newValue
+        instances[instanceId] = instance
+
+        Task {
+            do {
+                // Send toggleYolo command to backend
+                try await service.toggleYolo(newValue, instanceId: instanceId)
+
+                // Update local state (backend will send state update via SSE)
+                if var updatedInstance = instances[instanceId] {
+                    updatedInstance.isSudoTransitioning = false
+                    updatedInstance.yolo = newValue
+                    instances[instanceId] = updatedInstance
+                }
+            } catch {
+                // Failed to toggle - restore state
+                if var failedInstance = instances[instanceId] {
+                    failedInstance.isSudoTransitioning = false
+                    failedInstance.yolo = !newValue // Revert to original value
+                    instances[instanceId] = failedInstance
+                }
+            }
+        }
+    }
+
     // MARK: - SessionServiceDelegate
     
     nonisolated func sessionServiceDidConnect(_ service: SessionService) {
@@ -243,7 +306,7 @@ final class SessionStore: SessionServiceDelegate {
     }
     
     // MARK: - Message Handling
-    
+
     private func handleMessage(_ message: IncomingMessage) {
         if !connected {
             connected = true
@@ -254,19 +317,33 @@ final class SessionStore: SessionServiceDelegate {
         switch message {
         case .sessionState(let state):
             applySessionState(state)
-            
+
+        // Claude events (event-based architecture)
+        case .claudeTextDelta(let event):
+            handleTextDelta(event)
+        case .claudeTextComplete(let event):
+            handleTextComplete(event)
+        case .claudeToolAdded(let event):
+            handleToolAdded(event)
+        case .claudeToolStatus(let event):
+            handleToolStatus(event)
+        case .claudeToolResult(let event):
+            handleToolResult(event)
+        case .claudeStreamingState(let event):
+            handleStreamingStateChange(event)
+        case .claudeModelsAvailable(let event):
+            handleModelsAvailable(event)
+        case .claudeSessionComplete(let event):
+            handleSessionComplete(event)
+        case .serverRestarted:
+            logger.info("Server restarted, event buffer lost")
+
+        // Legacy (backward compat)
         case .bridgeUpdate(let update):
             applyBridgeUpdate(update.payload)
-            
-        case .cliStatus(let status):
-            applyCliStatus(status)
-            
-        case .instanceList(let list):
-            applyInstanceList(list.instances)
-            
         case .bridgeError(let error):
             applyError(error)
-            
+
         case .unknown:
             break
         }
@@ -283,124 +360,230 @@ final class SessionStore: SessionServiceDelegate {
             }
         }
     }
-    
-    private func applySessionState(_ state: SessionStateMessage) {
-        var newInstances: [String: InstanceState] = [:]
 
-        // Apply instance info
-        for info in state.instances {
-            let status: InstanceStatus = info.status ?? (info.connected ? .connected : .disconnected)
-            let provider = info.provider ?? instances[info.id]?.provider ?? .gemini
-            newInstances[info.id] = InstanceState(
-                id: info.id,
-                projectPath: info.projectPath,
-                status: status,
-                history: [],
-                pending: [],
-                streamingState: .idle,
-                isTrustedFolder: false,
-                currentModel: provider.defaultModel,
-                availableModels: [],
-                error: info.error,
-                provider: provider
-            )
+    // MARK: - Session State
+
+    private func applySessionState(_ state: SessionStateMessage) {
+        let serverInstanceIds = Set(state.instances.map { $0.id })
+
+        // Remove instances that no longer exist on server
+        for id in instances.keys where !serverInstanceIds.contains(id) {
+            instances.removeValue(forKey: id)
         }
-        
-        // Apply snapshots
-        for snapshot in state.snapshots {
-            let existing = newInstances[snapshot.instanceId]
-            let oldExisting = instances[snapshot.instanceId] // Preserve from old state
-            let provider = existing?.provider ?? .gemini
-            newInstances[snapshot.instanceId] = InstanceState(
-                id: snapshot.instanceId,
-                projectPath: snapshot.projectPath,
-                status: .connected,
-                history: snapshot.history ?? [],
-                pending: snapshot.pending ?? [],
-                streamingState: snapshot.streamingState ?? .idle,
-                isTrustedFolder: snapshot.isTrustedFolder ?? false,
-                currentModel: snapshot.currentModel ?? existing?.currentModel ?? provider.defaultModel,
-                availableModels: snapshot.availableModels ?? existing?.availableModels ?? [],
-                error: nil,
-                provider: provider,
-                usageMetrics: nil,
-                todos: nil,
-                planModeActive: oldExisting?.planModeActive ?? false
-            )
-            
-            // Update recent projects
-            if !snapshot.projectPath.isEmpty {
-                service.addToRecentProjects(snapshot.projectPath)
-                recentProjects = service.loadRecentProjects()
+
+        // Update or create entries for server instances
+        for meta in state.instances {
+            if var existing = instances[meta.id] {
+                // Existing local instance: mark connected, update metadata from server
+                existing.status = .connected
+                if existing.projectPath.isEmpty {
+                    existing.projectPath = meta.projectPath
+                }
+                existing.yolo = meta.yolo
+                instances[meta.id] = existing
+            } else {
+                // New instance from server: create with metadata, empty history
+                instances[meta.id] = InstanceState(
+                    id: meta.id,
+                    projectPath: meta.projectPath,
+                    status: .connected,
+                    history: [],
+                    pending: [],
+                    streamingState: .idle,
+                    isTrustedFolder: false,
+                    currentModel: "",
+                    availableModels: [],
+                    planModeActive: false,
+                    yolo: meta.yolo
+                )
             }
         }
-        
-        instances = newInstances
-        activeInstanceId = state.activeInstanceId ?? state.instances.first?.id ?? state.snapshots.first?.instanceId
+
+        // Update active instance if needed
+        if let current = activeInstanceId, !serverInstanceIds.contains(current) {
+            activeInstanceId = state.instances.first?.id
+        } else if activeInstanceId == nil {
+            activeInstanceId = state.instances.first?.id
+        }
     }
-    
-    private func applyBridgeUpdate(_ payload: BridgeUpdatePayload) {
-        let existing = instances[payload.instanceId]
-        let provider = existing?.provider ?? .gemini
-        let oldStreamingState = existing?.streamingState
-        let newStreamingState = payload.streamingState ?? .idle
 
-        // Detect streaming state transitions for notification triggers
-        let wasStreaming = oldStreamingState != .idle && oldStreamingState != nil
-        let isNowIdle = newStreamingState == .idle
-        let isNowWaitingForConfirmation = newStreamingState == .waiting_for_confirmation
+    // MARK: - Claude Event Handlers
 
-        // Check if app is in background and a conversation completed
+    private func handleTextDelta(_ event: ClaudeTextDeltaEvent) {
+        guard var instance = instances[event.instanceId] else { return }
+        instance.status = .connected
+
+        if instance.isTextAccumulating, let lastIdx = instance.pending.indices.last,
+           case .gemini(let existing) = instance.pending[lastIdx] {
+            // Append to current text block
+            instance.pending[lastIdx] = .gemini(existing + event.text)
+        } else {
+            // Start new text block
+            instance.pending.append(.gemini(event.text))
+            instance.isTextAccumulating = true
+        }
+
+        instances[event.instanceId] = instance
+    }
+
+    private func handleTextComplete(_ event: ClaudeTextCompleteEvent) {
+        guard var instance = instances[event.instanceId] else { return }
+
+        if instance.isTextAccumulating, let lastIdx = instance.pending.indices.last,
+           case .gemini = instance.pending[lastIdx] {
+            // Replace accumulated text with the definitive complete text
+            instance.pending[lastIdx] = .gemini(event.text)
+        } else {
+            // No prior deltas (edge case) — just add the complete text
+            instance.pending.append(.gemini(event.text))
+        }
+        instance.isTextAccumulating = false
+
+        instances[event.instanceId] = instance
+    }
+
+    private func handleToolAdded(_ event: ClaudeToolAddedEvent) {
+        guard var instance = instances[event.instanceId] else { return }
+        instance.isTextAccumulating = false
+
+        let tool = ToolCall(
+            callId: event.tool.callId,
+            name: event.tool.name,
+            description: event.tool.description,
+            status: event.confirmationDetails != nil ? "pending" : nil,
+            resultDisplay: nil,
+            confirmationDetails: event.confirmationDetails,
+            correlationId: nil
+        )
+
+        // Append to existing tool group or start a new one
+        if let lastIdx = instance.pending.indices.last,
+           case .toolGroup(var tools) = instance.pending[lastIdx] {
+            tools.append(tool)
+            instance.pending[lastIdx] = .toolGroup(tools)
+        } else {
+            instance.pending.append(.toolGroup([tool]))
+        }
+
+        instances[event.instanceId] = instance
+    }
+
+    private func handleToolStatus(_ event: ClaudeToolStatusEvent) {
+        guard var instance = instances[event.instanceId] else { return }
+
+        updateTool(in: &instance, callId: event.toolId) { tool in
+            tool.status = event.status
+        }
+
+        instances[event.instanceId] = instance
+    }
+
+    private func handleToolResult(_ event: ClaudeToolResultEvent) {
+        guard var instance = instances[event.instanceId] else { return }
+
+        updateTool(in: &instance, callId: event.toolId) { tool in
+            if let result = event.result {
+                tool.resultDisplay = .json(result)
+            }
+            if tool.status == nil || tool.status == "pending" || tool.status == "running" {
+                tool.status = "success"
+            }
+        }
+
+        instances[event.instanceId] = instance
+    }
+
+    private func handleStreamingStateChange(_ event: ClaudeStreamingStateEvent) {
+        guard var instance = instances[event.instanceId] else { return }
+
+        let oldState = instance.streamingState
+        let newState = event.state
+        instance.streamingState = newState
+
+        // When idle, flush pending to history
+        if newState == .idle {
+            instance.history.append(contentsOf: instance.pending)
+            instance.pending.removeAll()
+            instance.isTextAccumulating = false
+        }
+
+        instances[event.instanceId] = instance
+
+        // Persist after idle transition (conversation turn complete)
+        if newState == .idle {
+            scheduleSaveToDisk()
+        }
+
+        // --- Notification logic ---
+        let wasStreaming = oldState != .idle
+        let isNowIdle = newState == .idle
+        let isNowWaitingForConfirmation = newState == .waiting_for_confirmation
+        let projectPath = instance.projectPath
+
+        // Background notification: conversation completed
         if wasStreaming && isNowIdle && appIsInBackground {
-            logger.info("Conversation completed while app in background for instance: \(payload.instanceId)")
             NotificationService.shared.scheduleConversationCompleteNotification(
-                instanceId: payload.instanceId,
-                projectPath: payload.projectPath
+                instanceId: event.instanceId,
+                projectPath: projectPath
             )
         }
 
-        // Show in-app notification if conversation completed and user is viewing different instance
+        // In-app notification: conversation completed while viewing different instance
         if wasStreaming && isNowIdle {
-            let isViewingDifferentInstance = activeInstanceId != payload.instanceId && activeInstanceId != nil
+            let isViewingDifferentInstance = activeInstanceId != event.instanceId && activeInstanceId != nil
             if isViewingDifferentInstance {
-                logger.info("Showing in-app notification for completed conversation in instance: \(payload.instanceId)")
-                let projectName = payload.projectPath.split(separator: "/").last.map(String.init) ?? payload.projectPath
+                let projectName = projectPath.split(separator: "/").last.map(String.init) ?? projectPath
                 inAppNotificationManager?.show(
-                    instanceId: payload.instanceId,
+                    instanceId: event.instanceId,
                     projectName: projectName,
                     title: "Conversation Complete"
                 )
-            } else if activeInstanceId == payload.instanceId {
-                logger.info("Not showing notification - user is viewing this instance: \(payload.instanceId)")
             }
         }
 
-        // Check if tool confirmation is needed
+        // Background notification: tool confirmation needed
         if isNowWaitingForConfirmation && appIsInBackground {
-            // Extract tool name from pending messages if available
-            let toolName = extractToolNameFromPending(payload.pending)
-            logger.info("Tool confirmation needed while app in background for instance: \(payload.instanceId)")
+            let toolName = extractToolNameFromPending(instance.pending)
             NotificationService.shared.scheduleConfirmationNeededNotification(
-                instanceId: payload.instanceId,
+                instanceId: event.instanceId,
                 toolName: toolName,
-                projectPath: payload.projectPath
+                projectPath: projectPath
             )
         }
 
-        // Show in-app notification for tool confirmation if viewing different instance
+        // In-app notification: tool confirmation while viewing different instance
         if isNowWaitingForConfirmation {
-            let isViewingDifferentInstance = activeInstanceId != payload.instanceId && activeInstanceId != nil
+            let isViewingDifferentInstance = activeInstanceId != event.instanceId && activeInstanceId != nil
             if isViewingDifferentInstance {
-                logger.info("Showing in-app notification for confirmation needed in instance: \(payload.instanceId)")
-                let projectName = payload.projectPath.split(separator: "/").last.map(String.init) ?? payload.projectPath
-                let toolName = extractToolNameFromPending(payload.pending)
+                let projectName = projectPath.split(separator: "/").last.map(String.init) ?? projectPath
+                let toolName = extractToolNameFromPending(instance.pending)
                 inAppNotificationManager?.show(
-                    instanceId: payload.instanceId,
+                    instanceId: event.instanceId,
                     projectName: projectName,
                     title: "Action Required: \(toolName)"
                 )
             }
         }
+    }
+
+    private func handleModelsAvailable(_ event: ClaudeModelsAvailableEvent) {
+        guard var instance = instances[event.instanceId] else { return }
+        instance.availableModels = event.models
+        instance.status = .connected
+        instances[event.instanceId] = instance
+    }
+
+    private func handleSessionComplete(_ event: ClaudeSessionCompleteEvent) {
+        // Session complete means the SDK turn is done.
+        // The sessionId is stored for resume on reconnect.
+        // streaming_state: idle should have already flushed pending.
+        logger.debug("Session complete for instance: \(event.instanceId), SDK session: \(event.sessionId)")
+    }
+
+    // MARK: - Legacy Handlers
+
+    private func applyBridgeUpdate(_ payload: BridgeUpdatePayload) {
+        let existing = instances[payload.instanceId]
 
         instances[payload.instanceId] = InstanceState(
             id: payload.instanceId,
@@ -408,12 +591,11 @@ final class SessionStore: SessionServiceDelegate {
             status: .connected,
             history: payload.history ?? [],
             pending: payload.pending ?? [],
-            streamingState: newStreamingState,
+            streamingState: payload.streamingState ?? .idle,
             isTrustedFolder: payload.isTrustedFolder ?? false,
-            currentModel: payload.currentModel ?? existing?.currentModel ?? provider.defaultModel,
+            currentModel: payload.currentModel ?? existing?.currentModel ?? "",
             availableModels: payload.availableModels ?? existing?.availableModels ?? [],
             error: nil,
-            provider: provider,
             usageMetrics: payload.usageMetrics,
             todos: payload.todos,
             planModeActive: existing?.planModeActive ?? false
@@ -428,78 +610,7 @@ final class SessionStore: SessionServiceDelegate {
             recentProjects = service.loadRecentProjects()
         }
     }
-    
-    private func applyCliStatus(_ status: BridgeCliStatusMessage) {
-        guard let instanceId = status.instanceId else { return }
-        
-        let newStatus: InstanceStatus = status.status ?? (status.connected ? .connected : .disconnected)
-        
-        if var existing = instances[instanceId] {
-            existing.status = newStatus
-            existing.error = status.error ?? existing.error
-            instances[instanceId] = existing
-        } else if status.connected {
-            let provider = instances[instanceId]?.provider ?? .gemini
-            instances[instanceId] = InstanceState(
-                id: instanceId,
-                projectPath: "",
-                status: newStatus,
-                history: [],
-                pending: [],
-                streamingState: .idle,
-                isTrustedFolder: false,
-                currentModel: provider.defaultModel,
-                availableModels: [],
-                error: status.error,
-                provider: provider
-            )
-        }
-    }
-    
-    private func applyInstanceList(_ infoList: [SessionInstanceInfo]) {
-        var seen = Set<String>()
 
-        for info in infoList {
-            seen.insert(info.id)
-            let status: InstanceStatus = info.status ?? (info.connected ? .connected : .disconnected)
-            let provider = info.provider ?? instances[info.id]?.provider ?? .gemini
-
-            if var existing = instances[info.id] {
-                existing.projectPath = info.projectPath
-                existing.status = status
-                existing.error = info.error ?? existing.error
-                existing.provider = provider
-                instances[info.id] = existing
-            } else {
-                instances[info.id] = InstanceState(
-                    id: info.id,
-                    projectPath: info.projectPath,
-                    status: status,
-                    history: [],
-                    pending: [],
-                    streamingState: .idle,
-                    isTrustedFolder: false,
-                    currentModel: provider.defaultModel,
-                    availableModels: [],
-                    error: info.error,
-                    provider: provider
-                )
-            }
-        }
-        
-        // Remove instances that are no longer in the list
-        for id in instances.keys where !seen.contains(id) {
-            instances.removeValue(forKey: id)
-        }
-        
-        // Update active instance
-        if let current = activeInstanceId, !seen.contains(current) {
-            activeInstanceId = infoList.first?.id
-        } else if activeInstanceId == nil {
-            activeInstanceId = infoList.first?.id
-        }
-    }
-    
     private func applyError(_ error: BridgeErrorMessage) {
         guard let instanceId = error.instanceId, var existing = instances[instanceId] else { return }
         existing.status = .error
@@ -509,19 +620,118 @@ final class SessionStore: SessionServiceDelegate {
 
     // MARK: - Helper Methods
 
-    private func extractToolNameFromPending(_ pending: [Message]?) -> String {
-        guard let pending = pending else { return "Tool" }
-
-        for message in pending {
-            if case .toolGroup(let tools) = message {
-                // Get the first tool name from the tool group
-                if let firstTool = tools.first {
-                    return firstTool.name
+    /// Find and mutate a ToolCall in the instance's pending messages by callId.
+    private func updateTool(in instance: inout InstanceState, callId: String, update: (inout ToolCall) -> Void) {
+        for i in instance.pending.indices {
+            if case .toolGroup(var tools) = instance.pending[i] {
+                if let toolIdx = tools.firstIndex(where: { $0.callId == callId }) {
+                    update(&tools[toolIdx])
+                    instance.pending[i] = .toolGroup(tools)
+                    return
                 }
             }
         }
+        // Also search history (tool results can arrive after idle in rare cases)
+        for i in instance.history.indices {
+            if case .toolGroup(var tools) = instance.history[i] {
+                if let toolIdx = tools.firstIndex(where: { $0.callId == callId }) {
+                    update(&tools[toolIdx])
+                    instance.history[i] = .toolGroup(tools)
+                    return
+                }
+            }
+        }
+    }
 
+    private func extractToolNameFromPending(_ pending: [Message]) -> String {
+        for message in pending.reversed() {
+            if case .toolGroup(let tools) = message {
+                if let lastTool = tools.last {
+                    return lastTool.name
+                }
+            }
+        }
         return "Tool"
+    }
+
+    // MARK: - Local Persistence
+
+    private static var persistenceURL: URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = appSupport.appendingPathComponent("gemini-app")
+        if !FileManager.default.fileExists(atPath: dir.path) {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+        return dir.appendingPathComponent("instances.json")
+    }
+
+    private func scheduleSaveToDisk() {
+        persistTask?.cancel()
+        persistTask = Task { [weak self] in
+            guard let self else { return }
+            try? await Task.sleep(nanoseconds: UInt64(self.persistDebounceInterval * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self.saveToDiskNow()
+        }
+    }
+
+    private func saveToDiskNow() {
+        let persisted = PersistedAppState(
+            version: 1,
+            activeInstanceId: activeInstanceId,
+            instances: instances.values.map { inst in
+                PersistedInstanceState(
+                    id: inst.id,
+                    projectPath: inst.projectPath,
+                    history: inst.history,
+                    currentModel: inst.currentModel,
+                    yolo: inst.yolo,
+                    planModeActive: inst.planModeActive
+                )
+            }
+        )
+
+        do {
+            let data = try JSONEncoder().encode(persisted)
+            try data.write(to: Self.persistenceURL, options: .atomic)
+            logger.debug("Saved \(self.instances.count) instances to disk")
+        } catch {
+            logger.error("Failed to save instances to disk: \(error.localizedDescription)")
+        }
+    }
+
+    private func restoreFromDisk() {
+        let url = Self.persistenceURL
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            logger.debug("No persisted state file found")
+            return
+        }
+
+        do {
+            let data = try Data(contentsOf: url)
+            let persisted = try JSONDecoder().decode(PersistedAppState.self, from: data)
+
+            for inst in persisted.instances {
+                instances[inst.id] = InstanceState(
+                    id: inst.id,
+                    projectPath: inst.projectPath,
+                    status: .disconnected,
+                    history: inst.history,
+                    pending: [],
+                    streamingState: .idle,
+                    isTrustedFolder: false,
+                    currentModel: inst.currentModel,
+                    availableModels: [],
+                    planModeActive: inst.planModeActive,
+                    yolo: inst.yolo
+                )
+            }
+
+            activeInstanceId = persisted.activeInstanceId
+            logger.info("Restored \(persisted.instances.count) instances from disk")
+        } catch {
+            logger.error("Failed to restore instances from disk: \(error.localizedDescription)")
+        }
     }
 }
 
