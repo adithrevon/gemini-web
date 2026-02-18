@@ -215,9 +215,28 @@ final class SessionStore: SessionServiceDelegate {
     
     func sendConfirm(callId: String, outcome: ConfirmOutcome, correlationId: String?) {
         guard let instanceId = activeInstanceId else { return }
-        
+
+        // Optimistic UI update: immediately reflect the user's choice
+        if var instance = instances[instanceId] {
+            updateTool(in: &instance, callId: callId) { tool in
+                tool.status = outcome == .cancel ? "denied" : "approved"
+            }
+            instances[instanceId] = instance
+        }
+
         Task {
-            try? await service.confirm(callId: callId, outcome: outcome, correlationId: correlationId, instanceId: instanceId)
+            do {
+                try await service.confirm(callId: callId, outcome: outcome, correlationId: correlationId, instanceId: instanceId)
+            } catch {
+                // Revert to confirming so the user can retry
+                logger.error("Failed to send confirm: \(error.localizedDescription)")
+                if var instance = instances[instanceId] {
+                    updateTool(in: &instance, callId: callId) { tool in
+                        tool.status = "confirming"
+                    }
+                    instances[instanceId] = instance
+                }
+            }
         }
     }
     
@@ -446,11 +465,25 @@ final class SessionStore: SessionServiceDelegate {
         guard var instance = instances[event.instanceId] else { return }
         instance.isTextAccumulating = false
 
+        // Check if a tool with this callId already exists (dedup: assistant message
+        // emits tool_added without confirmationDetails, then _canUseTool emits it
+        // again with confirmationDetails for the same callId).
+        if event.confirmationDetails != nil,
+           let existing = findTool(in: instance, callId: event.tool.callId) {
+            // Update the existing entry with confirmation info instead of duplicating
+            updateTool(in: &instance, callId: event.tool.callId) { tool in
+                tool.status = "confirming"
+                tool.confirmationDetails = event.confirmationDetails
+            }
+            instances[event.instanceId] = instance
+            return
+        }
+
         let tool = ToolCall(
             callId: event.tool.callId,
             name: event.tool.name,
             description: event.tool.description,
-            status: event.confirmationDetails != nil ? "pending" : nil,
+            status: event.confirmationDetails != nil ? "confirming" : nil,
             resultDisplay: nil,
             confirmationDetails: event.confirmationDetails,
             correlationId: nil
@@ -619,6 +652,23 @@ final class SessionStore: SessionServiceDelegate {
     }
 
     // MARK: - Helper Methods
+
+    /// Check if a tool with the given callId exists in pending or history.
+    private func findTool(in instance: InstanceState, callId: String) -> ToolCall? {
+        for message in instance.pending {
+            if case .toolGroup(let tools) = message,
+               let tool = tools.first(where: { $0.callId == callId }) {
+                return tool
+            }
+        }
+        for message in instance.history {
+            if case .toolGroup(let tools) = message,
+               let tool = tools.first(where: { $0.callId == callId }) {
+                return tool
+            }
+        }
+        return nil
+    }
 
     /// Find and mutate a ToolCall in the instance's pending messages by callId.
     private func updateTool(in instance: inout InstanceState, callId: String, update: (inout ToolCall) -> Void) {

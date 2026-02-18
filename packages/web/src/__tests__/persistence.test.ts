@@ -26,8 +26,11 @@ describe('Session Persistence', () => {
     const r = await post(t.baseUrl, '/api/session', {});
     const sessionId = r.json?.['sessionId'] as string;
 
-    // Wait for debounced write
-    await new Promise((r) => setTimeout(r, 6000));
+    // Poll for the persistence file (debounce is 5s, poll up to 10s)
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(PERSIST_FILE) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 250));
+    }
 
     // Verify file was created
     expect(existsSync(PERSIST_FILE)).toBe(true);

@@ -201,6 +201,11 @@ export class ClaudeBridge extends EventEmitter {
         toolUseID: pending.toolUseID,
       });
     }
+
+    // When all pending confirmations are resolved, transition out of waiting state
+    if (this._pendingConfirmations.size === 0) {
+      this.emit('streaming_state', { state: 'responding' as StreamingState });
+    }
   }
 
   destroy(): void {
@@ -435,6 +440,7 @@ export class ClaudeBridge extends EventEmitter {
     };
 
     this.emit('tool_added', { tool: toolInfo, confirmationDetails: details });
+    this.emit('tool_status', { toolId: callId, status: 'confirming' });
     this.emit('streaming_state', { state: 'waiting_for_confirmation' as StreamingState });
 
     // Wait for iOS app to respond

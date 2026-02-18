@@ -15,7 +15,12 @@
       "Bash(git -C /Users/prem/workspace/gemini-web show HEAD:packages/web/src/claude-bridge.ts)",
       "Bash(git -C /Users/prem/workspace/gemini-web show HEAD:packages/web/src/provider.ts)",
       "Bash(git -C /Users/prem/workspace/gemini-web show HEAD:packages/web/src/ws-handler.ts)",
-      "Bash(git -C /Users/prem/workspace/gemini-web show 575e7f6a --name-status)"
+      "Bash(git -C /Users/prem/workspace/gemini-web show 575e7f6a --name-status)",
+      "Bash(cat:*)",
+      "Bash(__NEW_LINE_cd713d1aa265fc71__ cat << 'EOF'\n\n=== PACKAGES/A2A-SERVER TESTS ===\nEOF)",
+      "Bash(__NEW_LINE_4b878d79576da21e__ cat << 'EOF'\n\n=== PACKAGES/WEB TESTS ===\nEOF)",
+      "Bash(__NEW_LINE_83ccbf7b6274c99e__ cat << 'EOF'\n\n=== SCRIPTS TESTS ===\nEOF)",
+      "Bash(npx vitest run:*)"
     ]
   }
 }

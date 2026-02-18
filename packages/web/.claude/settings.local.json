@@ -5,7 +5,8 @@
       "Bash(npx tsc:*)",
       "Bash(npm run test:unit:*)",
       "Bash(npm run:*)",
-      "Bash(npx vitest run:*)"
+      "Bash(npx vitest run:*)",
+      "Bash(brew upgrade:*)"
     ]
   }
 }

@@ -5,5 +5,6 @@ export default defineConfig({
     globals: true,
     testTimeout: 30_000,
     hookTimeout: 10_000,
+    pool: 'vmThreads',
   },
 });
