@@ -51,7 +51,11 @@ export class ClaudeBridge extends EventEmitter {
   // Minimal state for SDK operations
   private _availableModels: ModelOption[] = [];
 
-  constructor(opts: { instanceId: string; projectPath: string; yolo?: boolean }) {
+  constructor(opts: {
+    instanceId: string;
+    projectPath: string;
+    yolo?: boolean;
+  }) {
     super();
     this.instanceId = opts.instanceId;
     this.projectPath = opts.projectPath;
@@ -68,7 +72,10 @@ export class ClaudeBridge extends EventEmitter {
 
   async setYolo(value: boolean): Promise<void> {
     this._yolo = value;
-    log.debug('yolo mode changed', { instanceId: this.instanceId, yolo: value });
+    log.debug('yolo mode changed', {
+      instanceId: this.instanceId,
+      yolo: value,
+    });
 
     if (!this._query) {
       return;
@@ -159,7 +166,10 @@ export class ClaudeBridge extends EventEmitter {
         log.debug('interrupt succeeded', { instanceId: this.instanceId });
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err);
-        log.debug('interrupt error', { error: msg, instanceId: this.instanceId });
+        log.debug('interrupt error', {
+          error: msg,
+          instanceId: this.instanceId,
+        });
       }
     }
   }
@@ -196,7 +206,7 @@ export class ClaudeBridge extends EventEmitter {
   async confirm(
     callId: string,
     outcome: string,
-    _correlationId?: string
+    _correlationId?: string,
   ): Promise<void> {
     const pending = this._pendingConfirmations.get(callId);
     if (!pending) {
@@ -315,7 +325,8 @@ export class ClaudeBridge extends EventEmitter {
           msgMeta['event'] = message['event']?.type;
         }
         if ('uuid' in message) msgMeta['uuid'] = message['uuid'];
-        if ('session_id' in message) msgMeta['session_id'] = message['session_id'];
+        if ('session_id' in message)
+          msgMeta['session_id'] = message['session_id'];
         log.debug('SDK message received', msgMeta);
 
         this._handleMessage(message);
@@ -418,7 +429,17 @@ export class ClaudeBridge extends EventEmitter {
         input: tool.input,
         description: `${tool.name}(${JSON.stringify(tool.input).slice(0, 50)}...)`,
       };
-      this.emit('tool_added', { tool: toolInfo });
+
+      // Build file diff info for Edit/Write tools so iOS can display it
+      // even in bypass mode (where _canUseTool is never called)
+      const diffDetails = this._confirmationBuilder.buildDiffOnly(
+        tool.name,
+        tool.input as any,
+      );
+      this.emit('tool_added', {
+        tool: toolInfo,
+        ...(diffDetails ? { confirmationDetails: diffDetails } : {}),
+      });
     }
   }
 
@@ -453,7 +474,7 @@ export class ClaudeBridge extends EventEmitter {
       suggestions?: PermissionUpdate[];
       decisionReason?: string;
       toolUseID: string;
-    }
+    },
   ): Promise<PermissionResult> {
     const callId = options.toolUseID;
     log.debug('🔍 canUseTool CALLED', {
@@ -462,7 +483,11 @@ export class ClaudeBridge extends EventEmitter {
       decisionReason: options.decisionReason,
     });
 
-    const details = this._confirmationBuilder.build(toolName, input as any, options);
+    const details = this._confirmationBuilder.build(
+      toolName,
+      input as any,
+      options,
+    );
 
     // Emit tool with confirmation details
     const toolInfo: ToolInfo = {
@@ -474,7 +499,9 @@ export class ClaudeBridge extends EventEmitter {
 
     this.emit('tool_added', { tool: toolInfo, confirmationDetails: details });
     this.emit('tool_status', { toolId: callId, status: 'confirming' });
-    this.emit('streaming_state', { state: 'waiting_for_confirmation' as StreamingState });
+    this.emit('streaming_state', {
+      state: 'waiting_for_confirmation' as StreamingState,
+    });
 
     // Wait for iOS app to respond
     return new Promise<PermissionResult>((resolve) => {
@@ -489,6 +516,16 @@ export class ClaudeBridge extends EventEmitter {
 }
 
 // Re-export types for convenience
-export type { ToolInput, KnownToolInput, ToolStatus, StreamingState } from './types.js';
+export type {
+  ToolInput,
+  KnownToolInput,
+  ToolStatus,
+  StreamingState,
+} from './types.js';
 export { AsyncPushQueue } from './async-queue.js';
-export { ClaudeError, ModelFetchError, SessionNotInitializedError, QueryAbortedError } from './errors.js';
+export {
+  ClaudeError,
+  ModelFetchError,
+  SessionNotInitializedError,
+  QueryAbortedError,
+} from './errors.js';

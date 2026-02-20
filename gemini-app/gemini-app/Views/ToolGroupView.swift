@@ -28,7 +28,7 @@ struct ToolCallView: View {
     @State private var isExpanded = false
 
     private var hasContent: Bool {
-        tool.description != nil || tool.renderedResult != nil
+        tool.description != nil || tool.renderedResult != nil || tool.confirmationDetails?.fileDiff != nil || tool.confirmationDetails?.command != nil
     }
 
     private var statusName: String {
@@ -89,13 +89,47 @@ struct ToolCallView: View {
             // Expanded content
             if isExpanded && hasContent {
                 VStack(alignment: .leading, spacing: Spacing.sm) {
-                    if let description = tool.description {
-                        Text(description)
+                    // File path
+                    if let filePath = tool.confirmationDetails?.filePath {
+                        Text(filePath)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
                     }
 
-                    if let resultText = tool.renderedResult {
+                    // File diff (from confirmationDetails — available in both confirm and bypass modes)
+                    if statusName != "confirming", let fileDiff = tool.confirmationDetails?.fileDiff {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            ScrollView(.vertical, showsIndicators: true) {
+                                DiffView(diff: fileDiff)
+                                    .padding(Spacing.sm)
+                            }
+                            .frame(maxHeight: 200)
+                        }
+                        .background(Color.surfaceTertiary.opacity(0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
+                    }
+
+                    // Command preview
+                    if statusName != "confirming", let command = tool.confirmationDetails?.command {
+                        HStack(spacing: Spacing.sm) {
+                            Text("$")
+                                .font(.system(.caption, design: .monospaced).weight(.bold))
+                                .foregroundStyle(.tertiary)
+                            Text(command)
+                                .font(.system(.caption, design: .monospaced))
+                                .lineLimit(3)
+                                .foregroundStyle(.primary)
+                        }
+                        .padding(Spacing.sm)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.surfaceTertiary.opacity(0.5))
+                        .clipShape(RoundedRectangle(cornerRadius: CornerRadius.small, style: .continuous))
+                    }
+
+                    // Tool result (fallback for tools without diff/command)
+                    if tool.confirmationDetails?.fileDiff == nil && tool.confirmationDetails?.command == nil,
+                       let resultText = tool.renderedResult {
                         ScrollView(.horizontal, showsIndicators: false) {
                             Text(resultText)
                                 .font(.codeBlock)

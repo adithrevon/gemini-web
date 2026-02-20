@@ -89,7 +89,10 @@ export class InstanceManager {
     }
   }
 
-  async restoreInstance(sessionId: string, instData: PersistedInstance): Promise<void> {
+  async restoreInstance(
+    sessionId: string,
+    instData: PersistedInstance,
+  ): Promise<void> {
     log.debug('Restoring instance', {
       instanceId: instData.id,
       claudeSessionId: instData.claudeSessionId,
@@ -209,7 +212,12 @@ export class InstanceManager {
     await inst.bridge.setModel(model);
   }
 
-  async confirm(instanceId: string, callId: string, outcome: string, correlationId?: string): Promise<void> {
+  async confirm(
+    instanceId: string,
+    callId: string,
+    outcome: string,
+    correlationId?: string,
+  ): Promise<void> {
     const inst = this.instances.get(instanceId);
     if (!inst) {
       throw new Error('Instance not found');
@@ -248,7 +256,8 @@ export class InstanceManager {
         projectPath: inst.projectPath,
         yolo: inst.bridge.yolo,
         claudeSessionId:
-          (inst.bridge as unknown as { _sessionId: string | null })._sessionId ?? undefined,
+          (inst.bridge as unknown as { _sessionId: string | null })
+            ._sessionId ?? undefined,
       };
       persistedInstances.set(instanceId, instData);
     }
@@ -281,32 +290,47 @@ export class InstanceManager {
     });
 
     // Tool events
-    bridge.on('tool_added', ({ tool, confirmationDetails }: { tool: any; confirmationDetails?: any }) => {
-      this.sessionManager.sendToSession(sessionId, {
-        type: 'claude:tool_added',
-        instanceId,
+    bridge.on(
+      'tool_added',
+      ({
         tool,
         confirmationDetails,
-      });
-    });
+      }: {
+        tool: any;
+        confirmationDetails?: any;
+      }) => {
+        this.sessionManager.sendToSession(sessionId, {
+          type: 'claude:tool_added',
+          instanceId,
+          tool,
+          confirmationDetails,
+        });
+      },
+    );
 
-    bridge.on('tool_status', ({ toolId, status }: { toolId: string; status: string }) => {
-      this.sessionManager.sendToSession(sessionId, {
-        type: 'claude:tool_status',
-        instanceId,
-        toolId,
-        status,
-      });
-    });
+    bridge.on(
+      'tool_status',
+      ({ toolId, status }: { toolId: string; status: string }) => {
+        this.sessionManager.sendToSession(sessionId, {
+          type: 'claude:tool_status',
+          instanceId,
+          toolId,
+          status,
+        });
+      },
+    );
 
-    bridge.on('tool_result', ({ toolId, result }: { toolId: string; result: any }) => {
-      this.sessionManager.sendToSession(sessionId, {
-        type: 'claude:tool_result',
-        instanceId,
-        toolId,
-        result,
-      });
-    });
+    bridge.on(
+      'tool_result',
+      ({ toolId, result }: { toolId: string; result: any }) => {
+        this.sessionManager.sendToSession(sessionId, {
+          type: 'claude:tool_result',
+          instanceId,
+          toolId,
+          result,
+        });
+      },
+    );
 
     // Streaming state
     bridge.on('streaming_state', ({ state }: { state: any }) => {
@@ -319,7 +343,11 @@ export class InstanceManager {
 
     // Models available
     bridge.on('models_available', ({ models }: { models: any[] }) => {
-      log.debug('models_available event', { instanceId, sessionId, modelCount: models.length });
+      log.debug('models_available event', {
+        instanceId,
+        sessionId,
+        modelCount: models.length,
+      });
       this.sessionManager.sendToSession(sessionId, {
         type: 'claude:models_available',
         instanceId,
@@ -328,12 +356,15 @@ export class InstanceManager {
     });
 
     // Session complete
-    bridge.on('session_complete', ({ sessionId: claudeSessionId }: { sessionId: string }) => {
-      this.sessionManager.sendToSession(sessionId, {
-        type: 'claude:session_complete',
-        instanceId,
-        sessionId: claudeSessionId,
-      });
-    });
+    bridge.on(
+      'session_complete',
+      ({ sessionId: claudeSessionId }: { sessionId: string }) => {
+        this.sessionManager.sendToSession(sessionId, {
+          type: 'claude:session_complete',
+          instanceId,
+          sessionId: claudeSessionId,
+        });
+      },
+    );
   }
 }

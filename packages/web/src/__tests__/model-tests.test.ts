@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import {
   anthropicSse,
   bodyContainsMatcher,
@@ -7,7 +15,11 @@ import {
   startMockAnthropicServer,
   startTestServer,
 } from './helpers.js';
-import type { MockAnthropicServer, MockAnthropicRequest, TestServer } from './helpers.js';
+import type {
+  MockAnthropicServer,
+  MockAnthropicRequest,
+  TestServer,
+} from './helpers.js';
 
 let testServer: TestServer;
 let mockAnthropic: MockAnthropicServer;
@@ -30,9 +42,9 @@ async function waitFor(
 }
 
 function requestForPrompt(prompt: string): MockAnthropicRequest | undefined {
-  return [...mockAnthropic.requests].reverse().find(
-    (req) => req.path === '/v1/messages' && req.rawBody.includes(prompt),
-  );
+  return [...mockAnthropic.requests]
+    .reverse()
+    .find((req) => req.path === '/v1/messages' && req.rawBody.includes(prompt));
 }
 
 function modelFamily(model: string | undefined): string {
@@ -67,11 +79,15 @@ describe('Model Use Cases', () => {
 
     const eventsPromise = collectSseEvents(testServer.baseUrl, sessionId, 2500);
 
-    const spawn = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'spawnInstance',
-      projectPath: '/tmp',
-      provider: 'claude',
-    });
+    const spawn = await post(
+      testServer.baseUrl,
+      `/api/session/${sessionId}/command`,
+      {
+        type: 'spawnInstance',
+        projectPath: '/tmp',
+        provider: 'claude',
+      },
+    );
     const instanceId = spawn.json?.['instanceId'] as string;
 
     const events = await eventsPromise;
@@ -81,7 +97,9 @@ describe('Model Use Cases', () => {
         (event as Record<string, unknown>)['instanceId'] === instanceId,
     ) as Record<string, unknown> | undefined;
 
-    const models = modelsEvent?.['models'] as Array<Record<string, unknown>> | undefined;
+    const models = modelsEvent?.['models'] as
+      | Array<Record<string, unknown>>
+      | undefined;
 
     expect(modelsEvent).toBeDefined();
     expect(Array.isArray(models)).toBe(true);
@@ -114,20 +132,30 @@ describe('Model Use Cases', () => {
       },
       {
         name: 'default_fallback',
-        response: anthropicSse.textResponse({ text: 'fallback model response' }),
+        response: anthropicSse.textResponse({
+          text: 'fallback model response',
+        }),
       },
     ]);
 
     const session = await post(testServer.baseUrl, '/api/session', {});
     const sessionId = session.json?.['sessionId'] as string;
 
-    const startupEventsPromise = collectSseEvents(testServer.baseUrl, sessionId, 2500);
+    const startupEventsPromise = collectSseEvents(
+      testServer.baseUrl,
+      sessionId,
+      2500,
+    );
 
-    const spawn = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'spawnInstance',
-      projectPath: '/tmp',
-      provider: 'claude',
-    });
+    const spawn = await post(
+      testServer.baseUrl,
+      `/api/session/${sessionId}/command`,
+      {
+        type: 'spawnInstance',
+        projectPath: '/tmp',
+        provider: 'claude',
+      },
+    );
     const instanceId = spawn.json?.['instanceId'] as string;
 
     const startupEvents = await startupEventsPromise;
@@ -138,7 +166,8 @@ describe('Model Use Cases', () => {
     ) as Record<string, unknown> | undefined;
 
     const modelValues = (
-      (modelsEvent?.['models'] as Array<Record<string, unknown>> | undefined) ?? []
+      (modelsEvent?.['models'] as Array<Record<string, unknown>> | undefined) ??
+      []
     )
       .map((model) => model['value'])
       .filter((value): value is string => typeof value === 'string');
@@ -160,20 +189,28 @@ describe('Model Use Cases', () => {
       | Record<string, unknown>
       | undefined;
     const baselineModel =
-      typeof baselineBody?.['model'] === 'string' ? (baselineBody['model'] as string) : undefined;
+      typeof baselineBody?.['model'] === 'string'
+        ? (baselineBody['model'] as string)
+        : undefined;
     const baselineFamily = modelFamily(baselineModel);
 
     const requestedModel =
-      concreteModelValues.find((value) => modelFamily(value) !== baselineFamily) ??
+      concreteModelValues.find(
+        (value) => modelFamily(value) !== baselineFamily,
+      ) ??
       concreteModelValues.find((value) => value !== baselineModel) ??
       concreteModelValues[0]!;
     const requestedFamily = modelFamily(requestedModel);
 
-    const setModel = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'setModel',
-      instanceId,
-      model: requestedModel,
-    });
+    const setModel = await post(
+      testServer.baseUrl,
+      `/api/session/${sessionId}/command`,
+      {
+        type: 'setModel',
+        instanceId,
+        model: requestedModel,
+      },
+    );
     expect(setModel.status).toBe(200);
 
     await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
@@ -188,7 +225,9 @@ describe('Model Use Cases', () => {
       | undefined;
 
     const afterModel =
-      typeof afterSetBody?.['model'] === 'string' ? (afterSetBody['model'] as string) : undefined;
+      typeof afterSetBody?.['model'] === 'string'
+        ? (afterSetBody['model'] as string)
+        : undefined;
     expect(typeof afterModel).toBe('string');
     expect(modelFamily(afterModel)).toBe(requestedFamily);
     if (baselineFamily && requestedFamily !== baselineFamily) {

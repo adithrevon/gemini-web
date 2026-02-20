@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { ClaudeBridge } from '../claude-bridge/index.js';
 import {
   anthropicSse,
@@ -39,7 +47,10 @@ function trackStates(bridge: ClaudeBridge): string[] {
   return states;
 }
 
-async function settleAndDestroy(bridge: ClaudeBridge, states: string[]): Promise<void> {
+async function settleAndDestroy(
+  bridge: ClaudeBridge,
+  states: string[],
+): Promise<void> {
   try {
     await waitFor(() => states.includes('idle'), 5_000);
   } catch {
@@ -124,11 +135,16 @@ describe('ClaudeBridge Use Cases (Mock Anthropic API)', () => {
       const promptText = 'run a dangerous bash command';
       const callId = 'toolu_usecase_1';
       const expectedCommand = 'rm -rf /tmp/some_dummy_folder';
-      const toolEvents: Array<{ tool: Record<string, unknown>; confirmationDetails?: unknown }> = [];
+      const toolEvents: Array<{
+        tool: Record<string, unknown>;
+        confirmationDetails?: unknown;
+      }> = [];
       const statuses: Array<{ toolId: string; status: string }> = [];
 
       bridge.on('tool_added', (e: any) => toolEvents.push(e));
-      bridge.on('tool_status', (e: { toolId: string; status: string }) => statuses.push(e));
+      bridge.on('tool_status', (e: { toolId: string; status: string }) =>
+        statuses.push(e),
+      );
 
       configurePromptScenario(
         mockServer,
@@ -145,10 +161,14 @@ describe('ClaudeBridge Use Cases (Mock Anthropic API)', () => {
         await bridge.submitMessage(promptText);
 
         await waitFor(() =>
-          toolEvents.some((e) => e.tool['callId'] === callId && e.tool['name'] === 'Bash'),
+          toolEvents.some(
+            (e) => e.tool['callId'] === callId && e.tool['name'] === 'Bash',
+          ),
         );
         await waitFor(() =>
-          statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
+          statuses.some(
+            (s) => s.toolId === callId && s.status === 'confirming',
+          ),
         );
 
         const event = toolEvents.find((e) => e.tool['callId'] === callId)!;
@@ -184,12 +204,14 @@ describe('ClaudeBridge Use Cases (Mock Anthropic API)', () => {
 
         await waitFor(() =>
           mockServer.requests.some(
-            (req) => req.path === '/v1/messages' && req.rawBody.includes(promptText),
+            (req) =>
+              req.path === '/v1/messages' && req.rawBody.includes(promptText),
           ),
         );
 
         const outbound = mockServer.requests.find(
-          (req) => req.path === '/v1/messages' && req.rawBody.includes(promptText),
+          (req) =>
+            req.path === '/v1/messages' && req.rawBody.includes(promptText),
         );
         expect(outbound).toBeDefined();
         expect(outbound?.rawBody).toContain(promptText);

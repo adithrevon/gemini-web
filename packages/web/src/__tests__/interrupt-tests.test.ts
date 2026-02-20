@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import {
   anthropicSse,
   bodyContainsMatcher,
@@ -7,12 +15,19 @@ import {
   startMockAnthropicServer,
   startTestServer,
 } from './helpers.js';
-import type { MockAnthropicServer, MockAnthropicSseEvent, TestServer } from './helpers.js';
+import type {
+  MockAnthropicServer,
+  MockAnthropicSseEvent,
+  TestServer,
+} from './helpers.js';
 
 let testServer: TestServer;
 let mockAnthropic: MockAnthropicServer;
 
-function setPromptScenario(prompt: string, response: MockAnthropicSseEvent[]): void {
+function setPromptScenario(
+  prompt: string,
+  response: MockAnthropicSseEvent[],
+): void {
   mockAnthropic.setScenarios([
     {
       name: 'target_prompt',
@@ -61,11 +76,15 @@ describe('Interrupt Use Cases', () => {
     const session = await post(testServer.baseUrl, '/api/session', {});
     const sessionId = session.json?.['sessionId'] as string;
 
-    const spawn = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'spawnInstance',
-      projectPath: '/tmp',
-      provider: 'claude',
-    });
+    const spawn = await post(
+      testServer.baseUrl,
+      `/api/session/${sessionId}/command`,
+      {
+        type: 'spawnInstance',
+        projectPath: '/tmp',
+        provider: 'claude',
+      },
+    );
     const instanceId = spawn.json?.['instanceId'] as string;
 
     const eventsPromise = collectSseEvents(testServer.baseUrl, sessionId, 4300);
@@ -78,10 +97,14 @@ describe('Interrupt Use Cases', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 200));
 
-    const interrupt = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'interrupt',
-      instanceId,
-    });
+    const interrupt = await post(
+      testServer.baseUrl,
+      `/api/session/${sessionId}/command`,
+      {
+        type: 'interrupt',
+        instanceId,
+      },
+    );
 
     const events = await eventsPromise;
 

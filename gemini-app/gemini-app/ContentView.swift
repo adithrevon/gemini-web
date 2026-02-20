@@ -398,12 +398,14 @@ struct ContentView: View {
         pendingInstanceId = nil
         pendingProjectPath = projectPath
         showNewChat = true
+        store.setActiveInstance(nil)
     }
 
     private func handleNewProject() {
         pendingProjectPath = nil
         pendingInstanceId = nil
         showNewChat = true
+        store.setActiveInstance(nil)
     }
 
     private func handleCancelNewChat() {

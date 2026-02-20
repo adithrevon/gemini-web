@@ -5,7 +5,15 @@
  * No private bridge internals are injected.
  */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -84,7 +92,10 @@ function trackStates(bridge: ClaudeBridge): string[] {
   return states;
 }
 
-async function settleAndDestroy(bridge: ClaudeBridge, states: string[]): Promise<void> {
+async function settleAndDestroy(
+  bridge: ClaudeBridge,
+  states: string[],
+): Promise<void> {
   try {
     await waitFor(() => states.includes('idle'), 5_000);
   } catch {
@@ -120,9 +131,14 @@ describe('Tool Confirmation Use Cases (Mock Anthropic API)', () => {
 
     const states = trackStates(bridge);
     const statuses: Array<{ toolId: string; status: string }> = [];
-    const confirmations: Array<{ tool: Record<string, unknown>; confirmationDetails: unknown }> = [];
+    const confirmations: Array<{
+      tool: Record<string, unknown>;
+      confirmationDetails: unknown;
+    }> = [];
 
-    bridge.on('tool_status', (e: { toolId: string; status: string }) => statuses.push(e));
+    bridge.on('tool_status', (e: { toolId: string; status: string }) =>
+      statuses.push(e),
+    );
     bridge.on('tool_added', (e: any) => {
       if (e.confirmationDetails) {
         confirmations.push(e);
@@ -144,19 +160,21 @@ describe('Tool Confirmation Use Cases (Mock Anthropic API)', () => {
       await bridge.submitMessage(promptText);
 
       await waitFor(() => confirmations.length > 0);
-      await waitFor(
-        () => statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
+      await waitFor(() =>
+        statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
       );
       expect(states).toContain('waiting_for_confirmation');
 
       const confirmation = confirmations[0]!;
       expect(confirmation.tool['callId']).toBe(callId);
       expect(confirmation.tool['name']).toBe('Bash');
-      expect((confirmation.tool['input'] as Record<string, unknown>)['command']).toBe(command);
+      expect(
+        (confirmation.tool['input'] as Record<string, unknown>)['command'],
+      ).toBe(command);
 
       await bridge.confirm(callId, 'cancel');
-      await waitFor(
-        () => statuses.some((s) => s.toolId === callId && s.status === 'denied'),
+      await waitFor(() =>
+        statuses.some((s) => s.toolId === callId && s.status === 'denied'),
       );
     } finally {
       await settleAndDestroy(bridge, states);
@@ -173,7 +191,9 @@ describe('Tool Confirmation Use Cases (Mock Anthropic API)', () => {
 
     const states = trackStates(bridge);
     const statuses: Array<{ toolId: string; status: string }> = [];
-    bridge.on('tool_status', (e: { toolId: string; status: string }) => statuses.push(e));
+    bridge.on('tool_status', (e: { toolId: string; status: string }) =>
+      statuses.push(e),
+    );
 
     configurePromptScenario(
       mockServer,
@@ -189,12 +209,12 @@ describe('Tool Confirmation Use Cases (Mock Anthropic API)', () => {
       await bridge.start();
       await bridge.submitMessage(promptText);
 
-      await waitFor(
-        () => statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
+      await waitFor(() =>
+        statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
       );
       await bridge.confirm(callId, 'cancel');
-      await waitFor(
-        () => statuses.some((s) => s.toolId === callId && s.status === 'denied'),
+      await waitFor(() =>
+        statuses.some((s) => s.toolId === callId && s.status === 'denied'),
       );
 
       await sleep(400);
@@ -214,7 +234,9 @@ describe('Tool Confirmation Use Cases (Mock Anthropic API)', () => {
 
     const states = trackStates(bridge);
     const statuses: Array<{ toolId: string; status: string }> = [];
-    bridge.on('tool_status', (e: { toolId: string; status: string }) => statuses.push(e));
+    bridge.on('tool_status', (e: { toolId: string; status: string }) =>
+      statuses.push(e),
+    );
 
     configurePromptScenario(
       mockServer,
@@ -230,12 +252,12 @@ describe('Tool Confirmation Use Cases (Mock Anthropic API)', () => {
       await bridge.start();
       await bridge.submitMessage(promptText);
 
-      await waitFor(
-        () => statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
+      await waitFor(() =>
+        statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
       );
       await bridge.confirm(callId, 'proceed_once');
-      await waitFor(
-        () => statuses.some((s) => s.toolId === callId && s.status === 'approved'),
+      await waitFor(() =>
+        statuses.some((s) => s.toolId === callId && s.status === 'approved'),
       );
       await waitFor(() => !existsSync(target.targetDir), 12_000);
     } finally {
@@ -253,7 +275,9 @@ describe('Tool Confirmation Use Cases (Mock Anthropic API)', () => {
 
     const states = trackStates(bridge);
     const statuses: Array<{ toolId: string; status: string }> = [];
-    bridge.on('tool_status', (e: { toolId: string; status: string }) => statuses.push(e));
+    bridge.on('tool_status', (e: { toolId: string; status: string }) =>
+      statuses.push(e),
+    );
 
     configurePromptScenario(
       mockServer,
@@ -269,12 +293,12 @@ describe('Tool Confirmation Use Cases (Mock Anthropic API)', () => {
       await bridge.start();
       await bridge.submitMessage(promptText);
 
-      await waitFor(
-        () => statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
+      await waitFor(() =>
+        statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
       );
       await bridge.confirm(callId, 'proceed_always');
-      await waitFor(
-        () => statuses.some((s) => s.toolId === callId && s.status === 'approved'),
+      await waitFor(() =>
+        statuses.some((s) => s.toolId === callId && s.status === 'approved'),
       );
       await waitFor(() => !existsSync(target.targetDir), 12_000);
     } finally {
@@ -292,7 +316,9 @@ describe('Tool Confirmation Use Cases (Mock Anthropic API)', () => {
 
     const states = trackStates(bridge);
     const statuses: Array<{ toolId: string; status: string }> = [];
-    bridge.on('tool_status', (e: { toolId: string; status: string }) => statuses.push(e));
+    bridge.on('tool_status', (e: { toolId: string; status: string }) =>
+      statuses.push(e),
+    );
 
     configurePromptScenario(
       mockServer,
@@ -308,19 +334,23 @@ describe('Tool Confirmation Use Cases (Mock Anthropic API)', () => {
       await bridge.start();
       await bridge.submitMessage(promptText);
 
-      await waitFor(
-        () => statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
+      await waitFor(() =>
+        statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
       );
       await bridge.confirm(callId, 'proceed_once');
-      await waitFor(
-        () => statuses.some((s) => s.toolId === callId && s.status === 'approved'),
+      await waitFor(() =>
+        statuses.some((s) => s.toolId === callId && s.status === 'approved'),
       );
 
-      const countAfterFirstConfirm = statuses.filter((s) => s.toolId === callId).length;
+      const countAfterFirstConfirm = statuses.filter(
+        (s) => s.toolId === callId,
+      ).length;
       await bridge.confirm(callId, 'cancel');
       await sleep(300);
 
-      const countAfterSecondConfirm = statuses.filter((s) => s.toolId === callId).length;
+      const countAfterSecondConfirm = statuses.filter(
+        (s) => s.toolId === callId,
+      ).length;
       const deniedAfterSecond = statuses.some(
         (s) => s.toolId === callId && s.status === 'denied',
       );

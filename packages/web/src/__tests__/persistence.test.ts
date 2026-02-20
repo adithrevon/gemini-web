@@ -1,4 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  vi,
+} from 'vitest';
 import {
   startMockAnthropicServer,
   startTestServer,
@@ -82,7 +90,9 @@ describe('Session Persistence Use Cases', () => {
     expect(state?.['sessionId']).toBe(sessionId);
 
     // Instances is an array of {id, projectPath, yolo} objects
-    const instances = state?.['instances'] as Array<Record<string, unknown>> | undefined;
+    const instances = state?.['instances'] as
+      | Array<Record<string, unknown>>
+      | undefined;
 
     expect(Array.isArray(instances)).toBe(true);
     expect(instances?.length).toBe(1);
@@ -128,7 +138,9 @@ describe('Session Persistence Use Cases', () => {
       | Record<string, unknown>
       | undefined;
 
-    const instances = state?.['instances'] as Array<Record<string, unknown>> | undefined;
+    const instances = state?.['instances'] as
+      | Array<Record<string, unknown>>
+      | undefined;
 
     expect(Array.isArray(instances)).toBe(true);
     expect(instances?.length).toBe(2);

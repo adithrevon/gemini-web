@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import {
   anthropicSse,
   bodyContainsMatcher,
@@ -6,7 +14,12 @@ import {
   startMockAnthropicServer,
   startTestServer,
 } from './helpers.js';
-import type { MockAnthropicServer, MockAnthropicSseEvent, SseEvent, TestServer } from './helpers.js';
+import type {
+  MockAnthropicServer,
+  MockAnthropicSseEvent,
+  SseEvent,
+  TestServer,
+} from './helpers.js';
 
 let testServer: TestServer;
 let mockAnthropic: MockAnthropicServer;
@@ -24,9 +37,12 @@ async function sseUntil(
   const qs = since !== undefined ? `?since=${since}` : '';
 
   try {
-    const response = await fetch(`${baseUrl}/api/session/${sessionId}/events${qs}`, {
-      signal: controller.signal,
-    });
+    const response = await fetch(
+      `${baseUrl}/api/session/${sessionId}/events${qs}`,
+      {
+        signal: controller.signal,
+      },
+    );
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
@@ -55,7 +71,8 @@ async function sseUntil(
   } catch (error: unknown) {
     const isAbort =
       error instanceof Error &&
-      (error.name === 'AbortError' || error.message.toLowerCase().includes('aborted'));
+      (error.name === 'AbortError' ||
+        error.message.toLowerCase().includes('aborted'));
     if (!isAbort) {
       throw error;
     }
@@ -125,11 +142,15 @@ describe('Advanced Streaming Use Cases', () => {
       10000,
     );
 
-    const spawn = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'spawnInstance',
-      projectPath: '/tmp',
-      provider: 'claude',
-    });
+    const spawn = await post(
+      testServer.baseUrl,
+      `/api/session/${sessionId}/command`,
+      {
+        type: 'spawnInstance',
+        projectPath: '/tmp',
+        provider: 'claude',
+      },
+    );
     const instanceId = spawn.json?.['instanceId'] as string;
 
     await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
@@ -194,11 +215,15 @@ describe('Advanced Streaming Use Cases', () => {
       10000,
     );
 
-    const spawn = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'spawnInstance',
-      projectPath: '/tmp',
-      provider: 'claude',
-    });
+    const spawn = await post(
+      testServer.baseUrl,
+      `/api/session/${sessionId}/command`,
+      {
+        type: 'spawnInstance',
+        projectPath: '/tmp',
+        provider: 'claude',
+      },
+    );
     const instanceId = spawn.json?.['instanceId'] as string;
 
     await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
@@ -213,7 +238,11 @@ describe('Advanced Streaming Use Cases', () => {
       (event) =>
         event.type === 'claude:tool_added' &&
         (event as Record<string, unknown>)['instanceId'] === instanceId &&
-        ((event as Record<string, unknown>)['tool'] as Record<string, unknown> | undefined)?.['callId'] === callId,
+        (
+          (event as Record<string, unknown>)['tool'] as
+            | Record<string, unknown>
+            | undefined
+        )?.['callId'] === callId,
     );
     const confirming = events.find(
       (event) =>
@@ -226,12 +255,16 @@ describe('Advanced Streaming Use Cases', () => {
     expect(toolAdded).toBeDefined();
     expect(confirming).toBeDefined();
 
-    const confirm = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'confirm',
-      instanceId,
-      callId,
-      outcome: 'cancel',
-    });
+    const confirm = await post(
+      testServer.baseUrl,
+      `/api/session/${sessionId}/command`,
+      {
+        type: 'confirm',
+        instanceId,
+        callId,
+        outcome: 'cancel',
+      },
+    );
     expect(confirm.status).toBe(200);
 
     await new Promise((resolve) => setTimeout(resolve, 200));
@@ -263,11 +296,15 @@ describe('Advanced Streaming Use Cases', () => {
       10000,
     );
 
-    const spawn = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'spawnInstance',
-      projectPath: '/tmp',
-      provider: 'claude',
-    });
+    const spawn = await post(
+      testServer.baseUrl,
+      `/api/session/${sessionId}/command`,
+      {
+        type: 'spawnInstance',
+        projectPath: '/tmp',
+        provider: 'claude',
+      },
+    );
     const instanceId = spawn.json?.['instanceId'] as string;
 
     await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
@@ -304,7 +341,9 @@ describe('Advanced Streaming Use Cases', () => {
 
     expect(replayedClaude.length).toBeGreaterThan(0);
     for (const event of replayedClaude) {
-      expect(((event as Record<string, unknown>)['seq'] as number)).toBeGreaterThan(since);
+      expect(
+        (event as Record<string, unknown>)['seq'] as number,
+      ).toBeGreaterThan(since);
     }
 
     await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
@@ -312,5 +351,4 @@ describe('Advanced Streaming Use Cases', () => {
       instanceId,
     });
   });
-
 });

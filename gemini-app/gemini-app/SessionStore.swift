@@ -468,11 +468,11 @@ final class SessionStore: SessionServiceDelegate {
         // Check if a tool with this callId already exists (dedup: assistant message
         // emits tool_added without confirmationDetails, then _canUseTool emits it
         // again with confirmationDetails for the same callId).
-        if event.confirmationDetails != nil,
-           let existing = findTool(in: instance, callId: event.tool.callId) {
-            // Update the existing entry with confirmation info instead of duplicating
+        if let existing = findTool(in: instance, callId: event.tool.callId),
+           event.confirmationDetails != nil {
+            // Update the existing entry with confirmation info instead of duplicating.
+            // Don't set status here — the separate tool_status event handles that.
             updateTool(in: &instance, callId: event.tool.callId) { tool in
-                tool.status = "confirming"
                 tool.confirmationDetails = event.confirmationDetails
             }
             instances[event.instanceId] = instance
@@ -483,7 +483,7 @@ final class SessionStore: SessionServiceDelegate {
             callId: event.tool.callId,
             name: event.tool.name,
             description: event.tool.description,
-            status: event.confirmationDetails != nil ? "confirming" : nil,
+            status: nil,
             resultDisplay: nil,
             confirmationDetails: event.confirmationDetails,
             correlationId: nil

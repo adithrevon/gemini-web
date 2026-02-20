@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import {
   get,
   post,
@@ -43,7 +51,10 @@ describe('Basic API Use Cases', () => {
     });
 
     it('GET /api/validate-path validates existing directories', async () => {
-      const response = await get(testServer.baseUrl, '/api/validate-path?path=/tmp');
+      const response = await get(
+        testServer.baseUrl,
+        '/api/validate-path?path=/tmp',
+      );
       expect(response.status).toBe(200);
       expect(response.json?.['valid']).toBe(true);
     });
@@ -64,49 +75,73 @@ describe('Basic API Use Cases', () => {
     });
 
     it('returns 404 for command requests on unknown sessions', async () => {
-      const response = await post(testServer.baseUrl, '/api/session/nonexistent/command', {
-        type: 'submit',
-        instanceId: 'missing',
-        text: 'hello',
-      });
+      const response = await post(
+        testServer.baseUrl,
+        '/api/session/nonexistent/command',
+        {
+          type: 'submit',
+          instanceId: 'missing',
+          text: 'hello',
+        },
+      );
       expect(response.status).toBe(404);
     });
 
     it('returns 400 when command type is missing', async () => {
-      const response = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {});
+      const response = await post(
+        testServer.baseUrl,
+        `/api/session/${sessionId}/command`,
+        {},
+      );
       expect(response.status).toBe(400);
       expect(response.json?.['error']).toBe('Invalid payload');
     });
 
     it('returns 400 for unsupported command type', async () => {
-      const response = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-        type: 'not-a-real-command',
-      });
+      const response = await post(
+        testServer.baseUrl,
+        `/api/session/${sessionId}/command`,
+        {
+          type: 'not-a-real-command',
+        },
+      );
       expect(response.status).toBe(400);
       expect(response.json?.['error']).toBe('Unsupported command');
     });
 
     it('returns 400 when spawnInstance is missing projectPath', async () => {
-      const response = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-        type: 'spawnInstance',
-      });
+      const response = await post(
+        testServer.baseUrl,
+        `/api/session/${sessionId}/command`,
+        {
+          type: 'spawnInstance',
+        },
+      );
       expect(response.status).toBe(400);
       expect(response.json?.['error']).toBe('Missing projectPath');
     });
 
     it('returns 400 when submit is missing instanceId', async () => {
-      const response = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-        type: 'submit',
-        text: 'hello',
-      });
+      const response = await post(
+        testServer.baseUrl,
+        `/api/session/${sessionId}/command`,
+        {
+          type: 'submit',
+          text: 'hello',
+        },
+      );
       expect(response.status).toBe(400);
       expect(response.json?.['error']).toBe('Missing instanceId');
     });
 
     it('returns 400 when terminateInstance is missing instanceId', async () => {
-      const response = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-        type: 'terminateInstance',
-      });
+      const response = await post(
+        testServer.baseUrl,
+        `/api/session/${sessionId}/command`,
+        {
+          type: 'terminateInstance',
+        },
+      );
       expect(response.status).toBe(400);
       expect(response.json?.['error']).toBe('Missing instanceId');
     });

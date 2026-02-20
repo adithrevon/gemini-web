@@ -112,7 +112,9 @@ export type MockAnthropicScenarioMatcher = (
 
 export type MockAnthropicScenarioResponse =
   | MockAnthropicSseEvent[]
-  | ((ctx: MockAnthropicScenarioContext) => MockAnthropicSseEvent[] | null | undefined);
+  | ((
+      ctx: MockAnthropicScenarioContext,
+    ) => MockAnthropicSseEvent[] | null | undefined);
 
 export interface MockAnthropicScenario {
   name?: string;
@@ -303,7 +305,9 @@ export const anthropicSse = {
     };
   },
 
-  textResponse(opts: MockAnthropicTextResponseOptions): MockAnthropicSseEvent[] {
+  textResponse(
+    opts: MockAnthropicTextResponseOptions,
+  ): MockAnthropicSseEvent[] {
     const chunks = opts.chunks ?? [opts.text];
     const index = opts.index ?? 0;
 
@@ -315,7 +319,11 @@ export const anthropicSse = {
       }),
       anthropicSse.contentBlockStart(index, { type: 'text', text: '' }),
       ...chunks.map((chunk) =>
-        anthropicSse.contentBlockDelta(index, { type: 'text_delta', text: chunk }, opts.delayMs),
+        anthropicSse.contentBlockDelta(
+          index,
+          { type: 'text_delta', text: chunk },
+          opts.delayMs,
+        ),
       ),
       anthropicSse.contentBlockStop(index),
       anthropicSse.messageDelta({
@@ -326,7 +334,9 @@ export const anthropicSse = {
     ];
   },
 
-  toolUseResponse(opts: MockAnthropicToolUseResponseOptions): MockAnthropicSseEvent[] {
+  toolUseResponse(
+    opts: MockAnthropicToolUseResponseOptions,
+  ): MockAnthropicSseEvent[] {
     const index = opts.index ?? 0;
     const chunks = opts.inputJsonChunks ?? [JSON.stringify(opts.input ?? {})];
 
@@ -359,11 +369,15 @@ export const anthropicSse = {
   },
 };
 
-export function bodyContainsMatcher(snippet: string): MockAnthropicScenarioMatcher {
+export function bodyContainsMatcher(
+  snippet: string,
+): MockAnthropicScenarioMatcher {
   return (request) => request.rawBody.includes(snippet);
 }
 
-function buildDefaultTextEvents(requestNumber: number): MockAnthropicSseEvent[] {
+function buildDefaultTextEvents(
+  requestNumber: number,
+): MockAnthropicSseEvent[] {
   return anthropicSse.textResponse({
     messageId: `msg_mock_${requestNumber}`,
     text: 'mock response',
@@ -434,7 +448,10 @@ export async function startMockAnthropicServer(): Promise<MockAnthropicServer> {
 
           requestCount += 1;
           const request = requests[requests.length - 1]!;
-          const scenarioResponse = resolveScenarioResponse(request, requestCount);
+          const scenarioResponse = resolveScenarioResponse(
+            request,
+            requestCount,
+          );
           const resolverResponse = responseResolver?.(request, requestCount);
           const events =
             scenarioResponse ??
@@ -451,7 +468,9 @@ export async function startMockAnthropicServer(): Promise<MockAnthropicServer> {
           for (const event of events) {
             writeSseEvent(res, event);
             if ((event.delayMs ?? 0) > 0) {
-              await new Promise((resolve) => setTimeout(resolve, event.delayMs));
+              await new Promise((resolve) =>
+                setTimeout(resolve, event.delayMs),
+              );
             }
           }
 

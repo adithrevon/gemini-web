@@ -28,7 +28,10 @@ describe('Browse API Use Cases (E2E)', () => {
 
   describe('Use Case: Browse Directory Tree', () => {
     it('returns directory listing', async () => {
-      const result = await get(t.baseUrl, `/api/browse?path=${encodeURIComponent(testDir)}`);
+      const result = await get(
+        t.baseUrl,
+        `/api/browse?path=${encodeURIComponent(testDir)}`,
+      );
 
       expect(result.status).toBe(200);
       expect(result.json?.['path']).toBe(testDir);
@@ -37,17 +40,23 @@ describe('Browse API Use Cases (E2E)', () => {
     });
 
     it('filters hidden directories', async () => {
-      const result = await get(t.baseUrl, `/api/browse?path=${encodeURIComponent(testDir)}`);
+      const result = await get(
+        t.baseUrl,
+        `/api/browse?path=${encodeURIComponent(testDir)}`,
+      );
 
       expect(result.status).toBe(200);
       const dirs = result.json?.['directories'] as Array<{ name: string }>;
-      const dirNames = dirs.map(d => d.name);
+      const dirNames = dirs.map((d) => d.name);
       expect(dirNames).not.toContain('.hidden');
     });
 
     it('detects project directory', async () => {
       const projectPath = join(testDir, 'my-project');
-      const result = await get(t.baseUrl, `/api/browse?path=${encodeURIComponent(projectPath)}`);
+      const result = await get(
+        t.baseUrl,
+        `/api/browse?path=${encodeURIComponent(projectPath)}`,
+      );
 
       expect(result.status).toBe(200);
       expect(result.json?.['isProject']).toBe(true);
@@ -62,7 +71,10 @@ describe('Browse API Use Cases (E2E)', () => {
     });
 
     it('returns error for invalid path', async () => {
-      const result = await get(t.baseUrl, '/api/browse?path=/nonexistent/path/12345');
+      const result = await get(
+        t.baseUrl,
+        '/api/browse?path=/nonexistent/path/12345',
+      );
 
       expect(result.status).toBe(400);
       expect(result.json?.['error']).toBeDefined();
@@ -71,7 +83,10 @@ describe('Browse API Use Cases (E2E)', () => {
 
   describe('Use Case: Validate Selected Path', () => {
     it('validates existing directory', async () => {
-      const result = await get(t.baseUrl, `/api/validate-path?path=${encodeURIComponent(testDir)}`);
+      const result = await get(
+        t.baseUrl,
+        `/api/validate-path?path=${encodeURIComponent(testDir)}`,
+      );
 
       expect(result.status).toBe(200);
       expect(result.json?.['valid']).toBe(true);
@@ -81,7 +96,10 @@ describe('Browse API Use Cases (E2E)', () => {
 
     it('validates project directory', async () => {
       const projectPath = join(testDir, 'my-project');
-      const result = await get(t.baseUrl, `/api/validate-path?path=${encodeURIComponent(projectPath)}`);
+      const result = await get(
+        t.baseUrl,
+        `/api/validate-path?path=${encodeURIComponent(projectPath)}`,
+      );
 
       expect(result.status).toBe(200);
       expect(result.json?.['valid']).toBe(true);
@@ -89,7 +107,10 @@ describe('Browse API Use Cases (E2E)', () => {
     });
 
     it('returns invalid for non-existent path', async () => {
-      const result = await get(t.baseUrl, '/api/validate-path?path=/does/not/exist/123');
+      const result = await get(
+        t.baseUrl,
+        '/api/validate-path?path=/does/not/exist/123',
+      );
 
       expect(result.status).toBe(400);
       expect(result.json?.['valid']).toBe(false);

@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import {
   collectSseEvents,
   post,
@@ -32,7 +40,9 @@ describe('Session Use Cases', () => {
     const created = await post(testServer.baseUrl, '/api/session', {});
     const sessionId = created.json?.['sessionId'] as string;
 
-    const resumed = await post(testServer.baseUrl, '/api/session', { sessionId });
+    const resumed = await post(testServer.baseUrl, '/api/session', {
+      sessionId,
+    });
 
     expect(created.status).toBe(200);
     expect(typeof sessionId).toBe('string');
@@ -58,11 +68,15 @@ describe('Session Use Cases', () => {
     const created = await post(testServer.baseUrl, '/api/session', {});
     const sessionId = created.json?.['sessionId'] as string;
 
-    const spawn = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'spawnInstance',
-      projectPath: '/tmp',
-      provider: 'claude',
-    });
+    const spawn = await post(
+      testServer.baseUrl,
+      `/api/session/${sessionId}/command`,
+      {
+        type: 'spawnInstance',
+        projectPath: '/tmp',
+        provider: 'claude',
+      },
+    );
     const instanceId = spawn.json?.['instanceId'] as string;
 
     const events = await collectSseEvents(testServer.baseUrl, sessionId, 1000);
@@ -70,36 +84,52 @@ describe('Session Use Cases', () => {
       | Record<string, unknown>
       | undefined;
 
-    const instances = state?.['instances'] as Array<Record<string, unknown>> | undefined;
+    const instances = state?.['instances'] as
+      | Array<Record<string, unknown>>
+      | undefined;
 
     expect(spawn.status).toBe(200);
-    expect(instances?.some((instance) => instance['id'] === instanceId)).toBe(true);
+    expect(instances?.some((instance) => instance['id'] === instanceId)).toBe(
+      true,
+    );
   });
 
   it('removes an instance after terminateInstance', async () => {
     const created = await post(testServer.baseUrl, '/api/session', {});
     const sessionId = created.json?.['sessionId'] as string;
 
-    const spawn = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'spawnInstance',
-      projectPath: '/tmp',
-      provider: 'claude',
-    });
+    const spawn = await post(
+      testServer.baseUrl,
+      `/api/session/${sessionId}/command`,
+      {
+        type: 'spawnInstance',
+        projectPath: '/tmp',
+        provider: 'claude',
+      },
+    );
     const instanceId = spawn.json?.['instanceId'] as string;
 
-    const terminate = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-      type: 'terminateInstance',
-      instanceId,
-    });
+    const terminate = await post(
+      testServer.baseUrl,
+      `/api/session/${sessionId}/command`,
+      {
+        type: 'terminateInstance',
+        instanceId,
+      },
+    );
 
     const events = await collectSseEvents(testServer.baseUrl, sessionId, 750);
     const state = events.find((event) => event.type === 'session_state') as
       | Record<string, unknown>
       | undefined;
-    const instances = state?.['instances'] as Array<Record<string, unknown>> | undefined;
+    const instances = state?.['instances'] as
+      | Array<Record<string, unknown>>
+      | undefined;
 
     expect(terminate.status).toBe(200);
-    expect(instances?.some((instance) => instance['id'] === instanceId)).not.toBe(true);
+    expect(
+      instances?.some((instance) => instance['id'] === instanceId),
+    ).not.toBe(true);
   });
 
   it('enforces cross-session isolation for instance commands', async () => {
@@ -109,11 +139,15 @@ describe('Session Use Cases', () => {
     const firstSessionId = first.json?.['sessionId'] as string;
     const secondSessionId = second.json?.['sessionId'] as string;
 
-    const spawn = await post(testServer.baseUrl, `/api/session/${firstSessionId}/command`, {
-      type: 'spawnInstance',
-      projectPath: '/tmp',
-      provider: 'claude',
-    });
+    const spawn = await post(
+      testServer.baseUrl,
+      `/api/session/${firstSessionId}/command`,
+      {
+        type: 'spawnInstance',
+        projectPath: '/tmp',
+        provider: 'claude',
+      },
+    );
     const instanceId = spawn.json?.['instanceId'] as string;
 
     const terminateFromOtherSession = await post(
@@ -129,7 +163,9 @@ describe('Session Use Cases', () => {
   });
 
   it('returns 404 for unknown session SSE subscriptions', async () => {
-    const response = await fetch(`${testServer.baseUrl}/api/session/nonexistent/events`);
+    const response = await fetch(
+      `${testServer.baseUrl}/api/session/nonexistent/events`,
+    );
     expect(response.status).toBe(404);
   });
 });

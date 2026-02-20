@@ -36,9 +36,11 @@ describe('BrowseManager Use Cases', () => {
 
       expect(result.path).toBe(testDir);
       expect(result.directories).toHaveLength(2); // Excludes .hidden-dir
-      expect(result.directories.map(d => d.name)).toContain('project-dir');
-      expect(result.directories.map(d => d.name)).toContain('regular-dir');
-      expect(result.directories.map(d => d.name)).not.toContain('.hidden-dir');
+      expect(result.directories.map((d) => d.name)).toContain('project-dir');
+      expect(result.directories.map((d) => d.name)).toContain('regular-dir');
+      expect(result.directories.map((d) => d.name)).not.toContain(
+        '.hidden-dir',
+      );
     });
 
     it('detects project directories', () => {
@@ -64,7 +66,7 @@ describe('BrowseManager Use Cases', () => {
     it('sorts directories alphabetically', () => {
       const result = browseManager.browse(testDir);
 
-      const names = result.directories.map(d => d.name);
+      const names = result.directories.map((d) => d.name);
       const sorted = [...names].sort((a, b) => a.localeCompare(b));
       expect(names).toEqual(sorted);
     });
@@ -101,7 +103,9 @@ describe('BrowseManager Use Cases', () => {
     });
 
     it('returns invalid for non-existent path', () => {
-      const result = browseManager.validatePath(join(testDir, 'does-not-exist'));
+      const result = browseManager.validatePath(
+        join(testDir, 'does-not-exist'),
+      );
 
       expect(result.valid).toBe(false);
       expect(result.error).toBeDefined();

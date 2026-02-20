@@ -1,4 +1,12 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,7 +18,11 @@ import {
   startMockAnthropicServer,
   startTestServer,
 } from './helpers.js';
-import type { MockAnthropicServer, MockAnthropicSseEvent, TestServer } from './helpers.js';
+import type {
+  MockAnthropicServer,
+  MockAnthropicSseEvent,
+  TestServer,
+} from './helpers.js';
 
 let testServer: TestServer;
 let mockAnthropic: MockAnthropicServer;
@@ -36,7 +48,10 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
-function createDeletionTarget(prefix: string): { targetDir: string; cleanup: () => void } {
+function createDeletionTarget(prefix: string): {
+  targetDir: string;
+  cleanup: () => void;
+} {
   const targetDir = mkdtempSync(join(tmpdir(), `${prefix}-`));
   writeFileSync(join(targetDir, 'dummy.txt'), 'dummy');
   return {
@@ -45,7 +60,10 @@ function createDeletionTarget(prefix: string): { targetDir: string; cleanup: () 
   };
 }
 
-function setPromptScenario(prompt: string, response: MockAnthropicSseEvent[]): void {
+function setPromptScenario(
+  prompt: string,
+  response: MockAnthropicSseEvent[],
+): void {
   mockAnthropic.setScenarios([
     {
       name: 'target_prompt',
@@ -99,15 +117,23 @@ describe('Yolo Mode Use Cases', () => {
       const session = await post(testServer.baseUrl, '/api/session', {});
       sessionId = session.json?.['sessionId'] as string;
 
-      const spawn = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-        type: 'spawnInstance',
-        projectPath: '/tmp',
-        provider: 'claude',
-        yolo: true,
-      });
+      const spawn = await post(
+        testServer.baseUrl,
+        `/api/session/${sessionId}/command`,
+        {
+          type: 'spawnInstance',
+          projectPath: '/tmp',
+          provider: 'claude',
+          yolo: true,
+        },
+      );
       instanceId = spawn.json?.['instanceId'] as string;
 
-      const eventsPromise = collectSseEvents(testServer.baseUrl, sessionId, 6500);
+      const eventsPromise = collectSseEvents(
+        testServer.baseUrl,
+        sessionId,
+        6500,
+      );
 
       await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
         type: 'submit',
@@ -129,7 +155,8 @@ describe('Yolo Mode Use Cases', () => {
         (event) =>
           event.type === 'claude:streaming_state' &&
           (event as Record<string, unknown>)['instanceId'] === instanceId &&
-          (event as Record<string, unknown>)['state'] === 'waiting_for_confirmation',
+          (event as Record<string, unknown>)['state'] ===
+            'waiting_for_confirmation',
       );
       const toolResults = events.filter(
         (event) =>
@@ -187,11 +214,15 @@ describe('Yolo Mode Use Cases', () => {
       const session = await post(testServer.baseUrl, '/api/session', {});
       sessionId = session.json?.['sessionId'] as string;
 
-      const spawn = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-        type: 'spawnInstance',
-        projectPath: '/tmp',
-        provider: 'claude',
-      });
+      const spawn = await post(
+        testServer.baseUrl,
+        `/api/session/${sessionId}/command`,
+        {
+          type: 'spawnInstance',
+          projectPath: '/tmp',
+          provider: 'claude',
+        },
+      );
       instanceId = spawn.json?.['instanceId'] as string;
 
       await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
@@ -201,18 +232,28 @@ describe('Yolo Mode Use Cases', () => {
       });
       await waitFor(() =>
         mockAnthropic.requests.some(
-          (request) => request.path === '/v1/messages' && request.rawBody.includes(warmupPrompt),
+          (request) =>
+            request.path === '/v1/messages' &&
+            request.rawBody.includes(warmupPrompt),
         ),
       );
 
-      const toggleYolo = await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
-        type: 'toggleYolo',
-        instanceId,
-        yolo: true,
-      });
+      const toggleYolo = await post(
+        testServer.baseUrl,
+        `/api/session/${sessionId}/command`,
+        {
+          type: 'toggleYolo',
+          instanceId,
+          yolo: true,
+        },
+      );
       expect(toggleYolo.status).toBe(200);
 
-      const eventsPromise = collectSseEvents(testServer.baseUrl, sessionId, 6500);
+      const eventsPromise = collectSseEvents(
+        testServer.baseUrl,
+        sessionId,
+        6500,
+      );
 
       await post(testServer.baseUrl, `/api/session/${sessionId}/command`, {
         type: 'submit',
@@ -234,7 +275,8 @@ describe('Yolo Mode Use Cases', () => {
         (event) =>
           event.type === 'claude:streaming_state' &&
           (event as Record<string, unknown>)['instanceId'] === instanceId &&
-          (event as Record<string, unknown>)['state'] === 'waiting_for_confirmation',
+          (event as Record<string, unknown>)['state'] ===
+            'waiting_for_confirmation',
       );
       const toolResults = events.filter(
         (event) =>

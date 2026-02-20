@@ -23,7 +23,11 @@ const transport = isDev
         {
           target: 'pino-pretty',
           level: 'debug',
-          options: { colorize: true, translateTime: 'SYS:standard', ignore: 'pid,hostname' },
+          options: {
+            colorize: true,
+            translateTime: 'SYS:standard',
+            ignore: 'pid,hostname',
+          },
         },
         {
           target: 'pino/file',
@@ -40,7 +44,7 @@ export const logger = pino(
     serializers: { err: pino.stdSerializers.err },
     base: { service: 'claude-web', env: process.env.NODE_ENV },
   },
-  transport
+  transport,
 );
 
 export const createLogger = (component: string) => {
@@ -55,8 +59,15 @@ export const createLogger = (component: string) => {
   };
 };
 
-export function logCommand(sessionId: string, body: unknown, response: unknown) {
-  logger.info({ component: 'command', sessionId, request: body, response }, 'Command executed');
+export function logCommand(
+  sessionId: string,
+  body: unknown,
+  response: unknown,
+) {
+  logger.info(
+    { component: 'command', sessionId, request: body, response },
+    'Command executed',
+  );
 }
 
 function cleanupOldLogs(dir: string, days = 14) {
@@ -65,7 +76,9 @@ function cleanupOldLogs(dir: string, days = 14) {
     if (!file.startsWith('server-')) continue;
     const date = file.slice(7, 17);
     if (Date.parse(date) < cutoff) {
-      try { unlinkSync(join(dir, file)); } catch {}
+      try {
+        unlinkSync(join(dir, file));
+      } catch {}
     }
   }
 }
