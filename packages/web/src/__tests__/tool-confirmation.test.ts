@@ -1,229 +1,349 @@
 /**
- * Integration tests for the tool confirmation (approval) flow.
+ * End-to-end tests for the tool confirmation (approval) flow.
  *
- * Tests the ClaudeBridge confirm() logic:
- *  - emitting correct tool_status events
- *  - resolving pending promises
- *  - streaming_state transition when all confirmations resolved
- *  - handling confirm for unknown callId
- *  - multiple simultaneous pending confirmations
+ * These tests drive the real ClaudeBridge + SDK path with Anthropic API mocked.
+ * No private bridge internals are injected.
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { ClaudeBridge } from '../claude-bridge/index.js';
-import type { PermissionResult } from '@anthropic-ai/claude-agent-sdk';
+import {
+  anthropicSse,
+  bodyContainsMatcher,
+  startMockAnthropicServer,
+  type MockAnthropicServer,
+  type MockAnthropicSseEvent,
+} from './helpers.js';
 
-/**
- * Helper: inject a fake pending confirmation into the bridge's private map
- * so we can test confirm() without needing a live SDK query.
- */
-function injectPending(
-  bridge: ClaudeBridge,
-  callId: string,
-): { promise: Promise<PermissionResult> } {
-  const map = (bridge as any)._pendingConfirmations as Map<string, any>;
-  let resolveFn!: (result: PermissionResult) => void;
-  const promise = new Promise<PermissionResult>((resolve) => {
-    resolveFn = resolve;
-  });
-  map.set(callId, {
-    resolve: resolveFn,
-    toolUseID: callId,
-    input: { command: 'echo test' },
-    suggestions: undefined,
-  });
-  return { promise };
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-describe('Tool Confirmation Flow', () => {
-  let bridge: ClaudeBridge;
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 15_000,
+  intervalMs = 25,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await sleep(intervalMs);
+  }
+  throw new Error(`Condition not met within ${timeoutMs}ms`);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function createDeletionTarget(prefix = 'tool-confirm-target'): {
+  targetDir: string;
+  cleanup: () => void;
+} {
+  const targetDir = mkdtempSync(join(tmpdir(), `${prefix}-`));
+  writeFileSync(join(targetDir, 'dummy.txt'), 'dummy');
+  return {
+    targetDir,
+    cleanup: () => rmSync(targetDir, { recursive: true, force: true }),
+  };
+}
+
+function configurePromptScenario(
+  mockServer: MockAnthropicServer,
+  prompt: string,
+  response: MockAnthropicSseEvent[],
+): void {
+  mockServer.setScenarios([
+    {
+      name: 'target_prompt',
+      once: true,
+      match: bodyContainsMatcher(prompt),
+      response,
+    },
+    {
+      name: 'sdk_probe_fallback',
+      response: anthropicSse.textResponse({ text: 'mock probe' }),
+    },
+  ]);
+}
+
+function createBridge(instanceId: string): ClaudeBridge {
+  return new ClaudeBridge({
+    instanceId,
+    projectPath: '/tmp',
+    yolo: false,
+  });
+}
+
+function trackStates(bridge: ClaudeBridge): string[] {
+  const states: string[] = [];
+  bridge.on('streaming_state', (e: { state: string }) => states.push(e.state));
+  return states;
+}
+
+async function settleAndDestroy(bridge: ClaudeBridge, states: string[]): Promise<void> {
+  try {
+    await waitFor(() => states.includes('idle'), 5_000);
+  } catch {
+    // Ignore timeout here; best-effort graceful settle.
+  }
+  bridge.destroy();
+}
+
+describe('Tool Confirmation Use Cases (Mock Anthropic API)', () => {
+  let mockServer: MockAnthropicServer;
+
+  beforeAll(async () => {
+    mockServer = await startMockAnthropicServer();
+    vi.stubEnv('ANTHROPIC_BASE_URL', mockServer.baseUrl);
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-mock-dummy');
+  });
+
+  afterAll(async () => {
+    vi.unstubAllEnvs();
+    await mockServer.cleanup();
+  });
 
   beforeEach(() => {
-    bridge = new ClaudeBridge({
-      instanceId: 'test-instance',
-      projectPath: '/tmp/test',
-    });
+    mockServer.reset();
   });
 
-  // ─── confirm() with outcome 'proceed_once' ────────────────────────
+  it('emits confirmation events when a dangerous Bash tool_use is streamed', async () => {
+    const bridge = createBridge('confirm-events');
+    const target = createDeletionTarget();
+    const callId = 'toolu_confirm_events_1';
+    const promptText = 'please remove target for confirmation event test';
+    const command = `rm -rf ${shellQuote(target.targetDir)}`;
 
-  it('resolves with allow when outcome is proceed_once', async () => {
-    const { promise } = injectPending(bridge, 'tool-1');
+    const states = trackStates(bridge);
+    const statuses: Array<{ toolId: string; status: string }> = [];
+    const confirmations: Array<{ tool: Record<string, unknown>; confirmationDetails: unknown }> = [];
 
-    await bridge.confirm('tool-1', 'proceed_once');
-
-    const result = await promise;
-    expect(result.behavior).toBe('allow');
-    expect(result.toolUseID).toBe('tool-1');
-  });
-
-  it('emits tool_status approved for proceed_once', async () => {
-    injectPending(bridge, 'tool-1');
-
-    const events: { toolId: string; status: string }[] = [];
-    bridge.on('tool_status', (e) => events.push(e));
-
-    await bridge.confirm('tool-1', 'proceed_once');
-
-    expect(events).toHaveLength(1);
-    expect(events[0]).toEqual({ toolId: 'tool-1', status: 'approved' });
-  });
-
-  // ─── confirm() with outcome 'proceed_always' ──────────────────────
-
-  it('resolves with allow + updatedPermissions for proceed_always', async () => {
-    const map = (bridge as any)._pendingConfirmations as Map<string, any>;
-    const fakeSuggestions = [{ type: 'tool', tool: 'Bash', permission: 'allow' }];
-    let resolveFn!: (result: PermissionResult) => void;
-    const promise = new Promise<PermissionResult>((resolve) => {
-      resolveFn = resolve;
-    });
-    map.set('tool-2', {
-      resolve: resolveFn,
-      toolUseID: 'tool-2',
-      input: { command: 'ls' },
-      suggestions: fakeSuggestions,
+    bridge.on('tool_status', (e: { toolId: string; status: string }) => statuses.push(e));
+    bridge.on('tool_added', (e: any) => {
+      if (e.confirmationDetails) {
+        confirmations.push(e);
+      }
     });
 
-    await bridge.confirm('tool-2', 'proceed_always');
+    configurePromptScenario(
+      mockServer,
+      promptText,
+      anthropicSse.toolUseResponse({
+        toolUseId: callId,
+        toolName: 'Bash',
+        input: { command },
+      }),
+    );
 
-    const result = await promise;
-    expect(result.behavior).toBe('allow');
-    expect(result.updatedPermissions).toBe(fakeSuggestions);
+    try {
+      await bridge.start();
+      await bridge.submitMessage(promptText);
+
+      await waitFor(() => confirmations.length > 0);
+      await waitFor(
+        () => statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
+      );
+      expect(states).toContain('waiting_for_confirmation');
+
+      const confirmation = confirmations[0]!;
+      expect(confirmation.tool['callId']).toBe(callId);
+      expect(confirmation.tool['name']).toBe('Bash');
+      expect((confirmation.tool['input'] as Record<string, unknown>)['command']).toBe(command);
+
+      await bridge.confirm(callId, 'cancel');
+      await waitFor(
+        () => statuses.some((s) => s.toolId === callId && s.status === 'denied'),
+      );
+    } finally {
+      await settleAndDestroy(bridge, states);
+      target.cleanup();
+    }
   });
 
-  // ─── confirm() with outcome 'cancel' ──────────────────────────────
+  it('cancel outcome denies execution and keeps the target directory', async () => {
+    const bridge = createBridge('confirm-cancel');
+    const target = createDeletionTarget();
+    const callId = 'toolu_confirm_cancel_1';
+    const promptText = 'cancel this dangerous operation';
+    const command = `rm -rf ${shellQuote(target.targetDir)}`;
 
-  it('resolves with deny when outcome is cancel', async () => {
-    const { promise } = injectPending(bridge, 'tool-3');
+    const states = trackStates(bridge);
+    const statuses: Array<{ toolId: string; status: string }> = [];
+    bridge.on('tool_status', (e: { toolId: string; status: string }) => statuses.push(e));
 
-    await bridge.confirm('tool-3', 'cancel');
+    configurePromptScenario(
+      mockServer,
+      promptText,
+      anthropicSse.toolUseResponse({
+        toolUseId: callId,
+        toolName: 'Bash',
+        input: { command },
+      }),
+    );
 
-    const result = await promise;
-    expect(result.behavior).toBe('deny');
-    expect(result.message).toBe('User denied');
+    try {
+      await bridge.start();
+      await bridge.submitMessage(promptText);
+
+      await waitFor(
+        () => statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
+      );
+      await bridge.confirm(callId, 'cancel');
+      await waitFor(
+        () => statuses.some((s) => s.toolId === callId && s.status === 'denied'),
+      );
+
+      await sleep(400);
+      expect(existsSync(target.targetDir)).toBe(true);
+    } finally {
+      await settleAndDestroy(bridge, states);
+      target.cleanup();
+    }
   });
 
-  it('emits tool_status denied for cancel', async () => {
-    injectPending(bridge, 'tool-3');
+  it('proceed_once approves execution and removes the target directory', async () => {
+    const bridge = createBridge('confirm-proceed-once');
+    const target = createDeletionTarget();
+    const callId = 'toolu_confirm_proceed_once_1';
+    const promptText = 'approve dangerous operation once';
+    const command = `rm -rf ${shellQuote(target.targetDir)}`;
 
-    const events: { toolId: string; status: string }[] = [];
-    bridge.on('tool_status', (e) => events.push(e));
+    const states = trackStates(bridge);
+    const statuses: Array<{ toolId: string; status: string }> = [];
+    bridge.on('tool_status', (e: { toolId: string; status: string }) => statuses.push(e));
 
-    await bridge.confirm('tool-3', 'cancel');
+    configurePromptScenario(
+      mockServer,
+      promptText,
+      anthropicSse.toolUseResponse({
+        toolUseId: callId,
+        toolName: 'Bash',
+        input: { command },
+      }),
+    );
 
-    expect(events).toHaveLength(1);
-    expect(events[0]).toEqual({ toolId: 'tool-3', status: 'denied' });
+    try {
+      await bridge.start();
+      await bridge.submitMessage(promptText);
+
+      await waitFor(
+        () => statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
+      );
+      await bridge.confirm(callId, 'proceed_once');
+      await waitFor(
+        () => statuses.some((s) => s.toolId === callId && s.status === 'approved'),
+      );
+      await waitFor(() => !existsSync(target.targetDir), 12_000);
+    } finally {
+      await settleAndDestroy(bridge, states);
+      target.cleanup();
+    }
   });
 
-  // ─── confirm() for unknown callId ──────────────────────────────────
+  it('proceed_always approves execution and removes the target directory', async () => {
+    const bridge = createBridge('confirm-proceed-always');
+    const target = createDeletionTarget();
+    const callId = 'toolu_confirm_proceed_always_1';
+    const promptText = 'approve dangerous operation always';
+    const command = `rm -rf ${shellQuote(target.targetDir)}`;
 
-  it('does nothing for unknown callId', async () => {
+    const states = trackStates(bridge);
+    const statuses: Array<{ toolId: string; status: string }> = [];
+    bridge.on('tool_status', (e: { toolId: string; status: string }) => statuses.push(e));
+
+    configurePromptScenario(
+      mockServer,
+      promptText,
+      anthropicSse.toolUseResponse({
+        toolUseId: callId,
+        toolName: 'Bash',
+        input: { command },
+      }),
+    );
+
+    try {
+      await bridge.start();
+      await bridge.submitMessage(promptText);
+
+      await waitFor(
+        () => statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
+      );
+      await bridge.confirm(callId, 'proceed_always');
+      await waitFor(
+        () => statuses.some((s) => s.toolId === callId && s.status === 'approved'),
+      );
+      await waitFor(() => !existsSync(target.targetDir), 12_000);
+    } finally {
+      await settleAndDestroy(bridge, states);
+      target.cleanup();
+    }
+  });
+
+  it('second confirm for the same callId is a no-op', async () => {
+    const bridge = createBridge('confirm-double');
+    const target = createDeletionTarget();
+    const callId = 'toolu_confirm_double_1';
+    const promptText = 'double confirm should no-op on second';
+    const command = `rm -rf ${shellQuote(target.targetDir)}`;
+
+    const states = trackStates(bridge);
+    const statuses: Array<{ toolId: string; status: string }> = [];
+    bridge.on('tool_status', (e: { toolId: string; status: string }) => statuses.push(e));
+
+    configurePromptScenario(
+      mockServer,
+      promptText,
+      anthropicSse.toolUseResponse({
+        toolUseId: callId,
+        toolName: 'Bash',
+        input: { command },
+      }),
+    );
+
+    try {
+      await bridge.start();
+      await bridge.submitMessage(promptText);
+
+      await waitFor(
+        () => statuses.some((s) => s.toolId === callId && s.status === 'confirming'),
+      );
+      await bridge.confirm(callId, 'proceed_once');
+      await waitFor(
+        () => statuses.some((s) => s.toolId === callId && s.status === 'approved'),
+      );
+
+      const countAfterFirstConfirm = statuses.filter((s) => s.toolId === callId).length;
+      await bridge.confirm(callId, 'cancel');
+      await sleep(300);
+
+      const countAfterSecondConfirm = statuses.filter((s) => s.toolId === callId).length;
+      const deniedAfterSecond = statuses.some(
+        (s) => s.toolId === callId && s.status === 'denied',
+      );
+
+      expect(countAfterSecondConfirm).toBe(countAfterFirstConfirm);
+      expect(deniedAfterSecond).toBe(false);
+    } finally {
+      await settleAndDestroy(bridge, states);
+      target.cleanup();
+    }
+  });
+
+  it('confirm on unknown callId is a no-op', async () => {
+    const bridge = createBridge('confirm-unknown');
     const events: unknown[] = [];
     bridge.on('tool_status', (e) => events.push(e));
     bridge.on('streaming_state', (e) => events.push(e));
 
-    await bridge.confirm('nonexistent', 'proceed_once');
-
-    expect(events).toHaveLength(0);
-  });
-
-  // ─── streaming_state transition ────────────────────────────────────
-
-  it('emits streaming_state responding when last confirmation resolved', async () => {
-    injectPending(bridge, 'tool-a');
-
-    const states: string[] = [];
-    bridge.on('streaming_state', (e: { state: string }) => states.push(e.state));
-
-    await bridge.confirm('tool-a', 'proceed_once');
-
-    expect(states).toContain('responding');
-  });
-
-  it('does NOT emit streaming_state when confirmations still pending', async () => {
-    injectPending(bridge, 'tool-a');
-    injectPending(bridge, 'tool-b');
-
-    const states: string[] = [];
-    bridge.on('streaming_state', (e: { state: string }) => states.push(e.state));
-
-    // Resolve only the first — tool-b is still pending
-    await bridge.confirm('tool-a', 'proceed_once');
-
-    expect(states).toHaveLength(0);
-  });
-
-  it('emits streaming_state after ALL confirmations resolved', async () => {
-    injectPending(bridge, 'tool-a');
-    injectPending(bridge, 'tool-b');
-    injectPending(bridge, 'tool-c');
-
-    const states: string[] = [];
-    bridge.on('streaming_state', (e: { state: string }) => states.push(e.state));
-
-    await bridge.confirm('tool-a', 'proceed_once');
-    expect(states).toHaveLength(0);
-
-    await bridge.confirm('tool-b', 'cancel');
-    expect(states).toHaveLength(0);
-
-    await bridge.confirm('tool-c', 'proceed_always');
-    expect(states).toHaveLength(1);
-    expect(states[0]).toBe('responding');
-  });
-
-  // ─── mixed outcomes in multi-tool scenario ─────────────────────────
-
-  it('each tool gets its own correct resolution in multi-tool scenario', async () => {
-    const p1 = injectPending(bridge, 'tool-1');
-    const p2 = injectPending(bridge, 'tool-2');
-    const p3 = injectPending(bridge, 'tool-3');
-
-    // Resolve in non-sequential order with different outcomes
-    await bridge.confirm('tool-2', 'cancel');
-    await bridge.confirm('tool-3', 'proceed_always');
-    await bridge.confirm('tool-1', 'proceed_once');
-
-    const r1 = await p1.promise;
-    const r2 = await p2.promise;
-    const r3 = await p3.promise;
-
-    expect(r1.behavior).toBe('allow');
-    expect(r2.behavior).toBe('deny');
-    expect(r3.behavior).toBe('allow');
-  });
-
-  // ─── double confirm same callId ────────────────────────────────────
-
-  it('second confirm for same callId is a no-op', async () => {
-    const { promise } = injectPending(bridge, 'tool-1');
-
-    const events: { toolId: string; status: string }[] = [];
-    bridge.on('tool_status', (e) => events.push(e));
-
-    await bridge.confirm('tool-1', 'proceed_once');
-    await bridge.confirm('tool-1', 'cancel'); // should be a no-op
-
-    const result = await promise;
-    expect(result.behavior).toBe('allow'); // first confirm wins
-    expect(events).toHaveLength(1); // only one event emitted
-  });
-
-  // ─── pending confirmations cleaned up on destroy ───────────────────
-
-  it('destroy rejects all pending confirmations', async () => {
-    const p1 = injectPending(bridge, 'tool-1');
-    const p2 = injectPending(bridge, 'tool-2');
-
-    bridge.destroy();
-
-    const r1 = await p1.promise;
-    const r2 = await p2.promise;
-
-    expect(r1.behavior).toBe('deny');
-    expect(r1.message).toBe('Session terminated');
-    expect(r2.behavior).toBe('deny');
-    expect(r2.message).toBe('Session terminated');
+    try {
+      await bridge.confirm('nonexistent-call-id', 'proceed_once');
+      expect(events).toHaveLength(0);
+    } finally {
+      bridge.destroy();
+    }
   });
 });

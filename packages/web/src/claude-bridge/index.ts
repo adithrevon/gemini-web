@@ -5,7 +5,15 @@
  * The iOS app owns all conversation state and builds it from events.
  */
 
-import { query, type Query, type Options, type PermissionResult, type CanUseTool, type PermissionUpdate } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query,
+  type Query,
+  type Options,
+  type PermissionResult,
+  type CanUseTool,
+  type PermissionUpdate,
+  type PermissionMode,
+} from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter } from 'events';
 import { MessageParser } from './message-parser.js';
 import { SDKMessageBuilder } from './sdk-message-builder.js';
@@ -58,9 +66,30 @@ export class ClaudeBridge extends EventEmitter {
     return this._yolo;
   }
 
-  setYolo(value: boolean): void {
+  async setYolo(value: boolean): Promise<void> {
     this._yolo = value;
     log.debug('yolo mode changed', { instanceId: this.instanceId, yolo: value });
+
+    if (!this._query) {
+      return;
+    }
+
+    const mode = this._resolvePermissionMode();
+    try {
+      await this._query.setPermissionMode(mode);
+      log.debug('setPermissionMode succeeded', {
+        instanceId: this.instanceId,
+        permissionMode: mode,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      log.debug('setPermissionMode error', {
+        instanceId: this.instanceId,
+        permissionMode: mode,
+        error: msg,
+      });
+      throw err instanceof Error ? err : new Error(msg);
+    }
   }
 
   async start(): Promise<void> {
@@ -236,6 +265,12 @@ export class ClaudeBridge extends EventEmitter {
     log.debug('destroy complete', { instanceId: this.instanceId });
   }
 
+  private _resolvePermissionMode(): PermissionMode {
+    if (this._yolo) return 'bypassPermissions';
+    if (this._planModeActive) return 'plan';
+    return 'default';
+  }
+
   private _buildQueryOptions(): Options {
     const options: Options = {
       cwd: this.projectPath,
@@ -246,14 +281,12 @@ export class ClaudeBridge extends EventEmitter {
       abortController: this._abortController,
     };
 
-    if (this._yolo) {
-      options.permissionMode = 'bypassPermissions';
+    const permissionMode = this._resolvePermissionMode();
+    options.permissionMode = permissionMode;
+
+    if (permissionMode === 'bypassPermissions') {
       options.allowDangerouslySkipPermissions = true;
-    } else if (this._planModeActive) {
-      options.permissionMode = 'plan';
-      options.canUseTool = this._canUseTool.bind(this) as CanUseTool;
     } else {
-      options.permissionMode = 'default';
       options.canUseTool = this._canUseTool.bind(this) as CanUseTool;
     }
 

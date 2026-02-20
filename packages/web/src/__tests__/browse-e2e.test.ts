@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-describe('Browse API (E2E)', () => {
+describe('Browse API Use Cases (E2E)', () => {
   let t: TestServer;
   let testDir: string;
 
@@ -26,7 +26,7 @@ describe('Browse API (E2E)', () => {
     rmSync(testDir, { recursive: true, force: true });
   });
 
-  describe('GET /api/browse', () => {
+  describe('Use Case: Browse Directory Tree', () => {
     it('returns directory listing', async () => {
       const result = await get(t.baseUrl, `/api/browse?path=${encodeURIComponent(testDir)}`);
 
@@ -69,7 +69,7 @@ describe('Browse API (E2E)', () => {
     });
   });
 
-  describe('GET /api/validate-path', () => {
+  describe('Use Case: Validate Selected Path', () => {
     it('validates existing directory', async () => {
       const result = await get(t.baseUrl, `/api/validate-path?path=${encodeURIComponent(testDir)}`);
 

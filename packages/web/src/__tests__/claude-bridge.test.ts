@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { AsyncPushQueue } from '../claude-bridge/async-queue.js';
 
-describe('AsyncPushQueue', () => {
+describe('AsyncPushQueue Use Cases', () => {
   it('should deliver pushed values in order', async () => {
     const q = new AsyncPushQueue<number>();
     q.push(1);
@@ -10,8 +10,8 @@ describe('AsyncPushQueue', () => {
     q.end();
 
     const values: number[] = [];
-    for await (const v of q) {
-      values.push(v);
+    for await (const value of q) {
+      values.push(value);
     }
     expect(values).toEqual([1, 2, 3]);
   });
@@ -19,16 +19,14 @@ describe('AsyncPushQueue', () => {
   it('should resolve waiting consumer when value is pushed', async () => {
     const q = new AsyncPushQueue<string>();
 
-    // Start consuming in the background
     const consumer = (async () => {
       const values: string[] = [];
-      for await (const v of q) {
-        values.push(v);
+      for await (const value of q) {
+        values.push(value);
       }
       return values;
     })();
 
-    // Push after a delay
     q.push('a');
     q.push('b');
     q.end();
@@ -41,7 +39,8 @@ describe('AsyncPushQueue', () => {
     const q = new AsyncPushQueue<number>();
     q.push(1);
     q.end();
-    q.push(2); // should be ignored
+    q.push(2);
+
     await expect(q.next()).resolves.toEqual({ value: 1, done: false });
     await expect(q.next()).resolves.toEqual({ value: undefined, done: true });
   });

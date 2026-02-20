@@ -1,25 +1,39 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import {
+  startMockAnthropicServer,
   startTestServer,
   post,
   collectSseEvents,
 } from './helpers.js';
-import type { TestServer } from './helpers.js';
+import type { MockAnthropicServer, TestServer } from './helpers.js';
 import { existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
 const PERSIST_FILE = join(homedir(), '.claude-web', 'sessions.json');
+let mockAnthropic: MockAnthropicServer;
+
+beforeAll(async () => {
+  mockAnthropic = await startMockAnthropicServer();
+  vi.stubEnv('ANTHROPIC_BASE_URL', mockAnthropic.baseUrl);
+  vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-mock-dummy');
+});
+
+afterAll(async () => {
+  vi.unstubAllEnvs();
+  await mockAnthropic.cleanup();
+});
 
 // Clean up persistence file before/after tests
 beforeEach(() => {
+  mockAnthropic.reset();
   if (existsSync(PERSIST_FILE)) {
     unlinkSync(PERSIST_FILE);
   }
 });
 
-describe('Session Persistence', () => {
-  it('creates persistence file on first state change', async () => {
+describe('Session Persistence Use Cases', () => {
+  it('Use Case: Create persistence file on first state change', async () => {
     const t = await startTestServer();
 
     // Create a session
@@ -38,7 +52,7 @@ describe('Session Persistence', () => {
     await t.cleanup();
   });
 
-  it('persists and restores a single Claude instance', async () => {
+  it('Use Case: Persist and restore a single Claude instance', async () => {
     let t = await startTestServer();
 
     const r1 = await post(t.baseUrl, '/api/session', {});
@@ -79,7 +93,7 @@ describe('Session Persistence', () => {
     await t.cleanup();
   });
 
-  it('restores multiple Claude instances', async () => {
+  it('Use Case: Restore multiple Claude instances', async () => {
     let t = await startTestServer();
 
     const r1 = await post(t.baseUrl, '/api/session', {});
@@ -124,7 +138,7 @@ describe('Session Persistence', () => {
     await t.cleanup();
   });
 
-  it('handles commands to specific instances after restoration', async () => {
+  it('Use Case: Route commands to specific restored instances', async () => {
     let t = await startTestServer();
 
     const r1 = await post(t.baseUrl, '/api/session', {});
@@ -173,7 +187,7 @@ describe('Session Persistence', () => {
     await t.cleanup();
   });
 
-  it('handles corrupt persistence file gracefully', async () => {
+  it('Use Case: Recover gracefully from corrupt persistence file', async () => {
     let t = await startTestServer();
 
     // Create a corrupt file
@@ -195,7 +209,7 @@ describe('Session Persistence', () => {
     await t.cleanup();
   });
 
-  it('persists session immediately on graceful shutdown', async () => {
+  it('Use Case: Persist immediately during graceful shutdown', async () => {
     const t = await startTestServer();
 
     const r1 = await post(t.baseUrl, '/api/session', {});

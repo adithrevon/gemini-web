@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-describe('BrowseManager', () => {
+describe('BrowseManager Use Cases', () => {
   let testDir: string;
   let browseManager: BrowseManager;
 
@@ -30,7 +30,7 @@ describe('BrowseManager', () => {
     rmSync(testDir, { recursive: true, force: true });
   });
 
-  describe('browse()', () => {
+  describe('Use Case: Browse a Path', () => {
     it('lists subdirectories in a path', () => {
       const result = browseManager.browse(testDir);
 
@@ -77,7 +77,7 @@ describe('BrowseManager', () => {
     });
   });
 
-  describe('validatePath()', () => {
+  describe('Use Case: Validate a Candidate Path', () => {
     it('validates existing directory as valid', () => {
       const result = browseManager.validatePath(testDir);
 
@@ -125,7 +125,7 @@ describe('BrowseManager', () => {
     });
   });
 
-  describe('project detection', () => {
+  describe('Use Case: Detect Project Markers', () => {
     it('detects package.json', () => {
       const dir = join(testDir, 'npm-project');
       mkdirSync(dir);

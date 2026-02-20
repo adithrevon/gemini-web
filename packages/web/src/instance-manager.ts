@@ -233,7 +233,7 @@ export class InstanceManager {
       throw new Error('Instance not found');
     }
     log.debug('Toggle yolo', { instanceId, yolo });
-    inst.bridge.setYolo(yolo);
+    await inst.bridge.setYolo(yolo);
   }
 
   // --- Persistence Support ---
